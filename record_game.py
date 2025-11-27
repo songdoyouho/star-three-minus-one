@@ -1,5 +1,6 @@
 import cv2
 import time
+import os
 from datetime import datetime
 from window_capture import WindowCapture
 
@@ -34,7 +35,11 @@ def main():
             if video_writer is None:
                 # 初始化 VideoWriter
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_filename = f"recorded_video\game_recording_{timestamp}.mp4"
+                # 確保目錄存在
+                output_dir = "recorded_video"
+                if not os.path.exists(output_dir):
+                    os.makedirs(output_dir)
+                output_filename = os.path.join(output_dir, f"game_recording_{timestamp}.mp4")
                 
                 # 使用 MP4V codec (四字符代碼)
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')

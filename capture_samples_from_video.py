@@ -1,6 +1,7 @@
 import cv2
 import os
 import sys
+import numpy as np
 
 # 建立樣本存放目錄
 SAMPLE_DIR = 'samples'
@@ -20,9 +21,11 @@ print("================\n")
 # 全域變數
 drawing = False
 ix, iy = -1, -1
-rect = (0, 0, 0, 0)  # x, y, w, h
+rect = (0, 0, 0, 0)  # x, y, w, h (相對於顯示視窗的座標)
 is_paused = True
 current_frame = None
+display_scale_x = 1.0  # 顯示圖片與原始圖片的縮放比例
+display_scale_y = 1.0
 
 def draw_rect(event, x, y, flags, param):
     global ix, iy, drawing, rect
@@ -52,7 +55,7 @@ def draw_rect(event, x, y, flags, param):
         rect = (ix, iy, w, h)
 
 def main():
-    global is_paused, current_frame, rect
+    global is_paused, current_frame, rect, display_scale_x, display_scale_y
     
     # 檢查是否有提供影片路徑
     if len(sys.argv) > 1:
@@ -77,8 +80,19 @@ def main():
     fps = cap.get(cv2.CAP_PROP_FPS)
     print(f"影片資訊: {total_frames} 幀, FPS: {fps:.2f}")
     
-    cv2.namedWindow('Capture Samples from Video')
+    # 建立可調整大小的視窗
+    cv2.namedWindow('Capture Samples from Video', cv2.WINDOW_NORMAL)
     cv2.setMouseCallback('Capture Samples from Video', draw_rect)
+    
+    # 設定初始視窗大小（可選，如果不設定會使用預設大小）
+    # 這裡設定為原始解析度的 80%，您也可以改成其他比例
+    ret, first_frame = cap.read()
+    if ret:
+        original_height, original_width = first_frame.shape[:2]
+        initial_width = int(original_width * 0.8)
+        initial_height = int(original_height * 0.8)
+        cv2.resizeWindow('Capture Samples from Video', initial_width, initial_height)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # 重置到第一幀
     
     frame_number = 0
     
@@ -104,7 +118,38 @@ def main():
                     break
         
         # 繪製當前選取框
-        display_img = current_frame.copy()
+        original_height, original_width = current_frame.shape[:2]
+        
+        # 獲取視窗大小
+        window_rect = cv2.getWindowImageRect('Capture Samples from Video')
+        window_width = window_rect[2] if window_rect[2] > 0 else original_width
+        window_height = window_rect[3] if window_rect[3] > 0 else original_height
+        
+        # 計算縮放比例（保持長寬比）
+        scale_x = window_width / original_width
+        scale_y = window_height / original_height
+        actual_scale = min(scale_x, scale_y)
+        
+        # 計算實際顯示的圖片大小和偏移
+        displayed_width = int(original_width * actual_scale)
+        displayed_height = int(original_height * actual_scale)
+        offset_x = (window_width - displayed_width) // 2
+        offset_y = (window_height - displayed_height) // 2
+        
+        # 儲存縮放資訊供後續使用
+        display_scale_x = actual_scale
+        display_scale_y = actual_scale
+        
+        # 建立顯示用的圖片（縮放到視窗大小）
+        display_img = cv2.resize(current_frame, (displayed_width, displayed_height))
+        
+        # 如果有偏移，在黑色背景上居中顯示
+        if offset_x > 0 or offset_y > 0:
+            full_display = np.zeros((window_height, window_width, 3), dtype=np.uint8)
+            full_display[offset_y:offset_y+displayed_height, offset_x:offset_x+displayed_width] = display_img
+            display_img = full_display
+        
+        # 繪製選取框（座標已經是顯示座標）
         if rect[2] > 0 and rect[3] > 0:
             x, y, w, h = rect
             cv2.rectangle(display_img, (x, y), (x + w, y + h), (0, 255, 0), 2)
@@ -160,30 +205,76 @@ def main():
         elif key == ord('s'):
             # 儲存選取區域
             if rect[2] > 0 and rect[3] > 0:
-                x, y, w, h = rect
-                # 確保座標不超出邊界
-                x = max(0, x)
-                y = max(0, y)
-                w = min(w, current_frame.shape[1] - x)
-                h = min(h, current_frame.shape[0] - y)
+                # 將顯示座標轉換回原始圖片座標
+                x_display, y_display, w_display, h_display = rect
                 
-                if w > 0 and h > 0:
-                    roi = current_frame[y:y+h, x:x+w]
-                    cv2.imshow('Preview', roi)
-                    print(f"\n[Frame {frame_number}] 請輸入檔案名稱 (例如 1m=一萬, 2p=二筒, 3s=三條): ", end='')
-                    
-                    filename = input()
-                    
-                    if filename:
-                        filepath = os.path.join(SAMPLE_DIR, f"{filename}.png")
-                        cv2.imwrite(filepath, roi)
-                        print(f"已儲存: {filepath}")
-                    else:
-                        print("取消儲存")
-                    
-                    cv2.destroyWindow('Preview')
+                # 重新計算縮放和偏移（與顯示時一致）
+                original_height, original_width = current_frame.shape[:2]
+                window_rect = cv2.getWindowImageRect('Capture Samples from Video')
+                window_width = window_rect[2] if window_rect[2] > 0 else original_width
+                window_height = window_rect[3] if window_rect[3] > 0 else original_height
+                
+                scale_x = window_width / original_width
+                scale_y = window_height / original_height
+                actual_scale = min(scale_x, scale_y)
+                
+                displayed_width = int(original_width * actual_scale)
+                displayed_height = int(original_height * actual_scale)
+                offset_x = (window_width - displayed_width) // 2
+                offset_y = (window_height - displayed_height) // 2
+                
+                # 調整座標（減去黑邊偏移）
+                x_display_adjusted = x_display - offset_x
+                y_display_adjusted = y_display - offset_y
+                
+                # 轉換到原始圖片座標
+                if actual_scale > 0:
+                    x = max(0, int(x_display_adjusted / actual_scale))
+                    y = max(0, int(y_display_adjusted / actual_scale))
+                    w = max(1, int(w_display / actual_scale))
+                    h = max(1, int(h_display / actual_scale))
                 else:
-                    print("選取區域無效")
+                    x, y, w, h = max(0, x_display), max(0, y_display), max(1, w_display), max(1, h_display)
+                
+                # 確保座標不超出邊界
+                x = min(x, original_width - 1)
+                y = min(y, original_height - 1)
+                w = min(w, original_width - x)
+                h = min(h, original_height - y)
+                
+                # 調試資訊
+                print(f"\n[Debug] 顯示座標: ({x_display}, {y_display}, {w_display}, {h_display})")
+                print(f"[Debug] 偏移: ({offset_x}, {offset_y}), 縮放: {actual_scale:.4f}")
+                print(f"[Debug] 原始座標: ({x}, {y}, {w}, {h})")
+                print(f"[Debug] 原始圖片大小: {original_width}x{original_height}")
+                
+                if w > 0 and h > 0 and x >= 0 and y >= 0:
+                    roi = current_frame[y:y+h, x:x+w].copy()
+                    
+                    if roi.size > 0 and roi.shape[0] > 0 and roi.shape[1] > 0:
+                        # 顯示預覽（放大以便檢查）
+                        preview = cv2.resize(roi, (0, 0), fx=3, fy=3)
+                        cv2.imshow('Preview', preview)
+                        print(f"[Frame {frame_number}] 選取區域: ({x}, {y}, {w}, {h})")
+                        print("請輸入檔案名稱 (例如 1m=一萬, 2p=二筒, 3s=三條): ", end='')
+                        
+                        filename = input()
+                        
+                        if filename:
+                            filepath = os.path.join(SAMPLE_DIR, f"{filename}.png")
+                            success = cv2.imwrite(filepath, roi)
+                            if success:
+                                print(f"✓ 已儲存: {filepath} (大小: {w}x{h})")
+                            else:
+                                print(f"✗ 儲存失敗: {filepath}")
+                        else:
+                            print("取消儲存")
+                        
+                        cv2.destroyWindow('Preview')
+                    else:
+                        print(f"✗ ROI 無效: shape={roi.shape if hasattr(roi, 'shape') else 'N/A'}")
+                else:
+                    print(f"✗ 座標無效: x={x}, y={y}, w={w}, h={h}")
             else:
                 print("請先框選區域")
     
