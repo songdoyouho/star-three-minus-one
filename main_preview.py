@@ -3,11 +3,14 @@ import time
 import os
 import sys
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from window_capture import WindowCapture
 
-def load_wan_templates(samples_dir='samples'):
-    """載入萬子模板 (1m-9m)"""
+def load_all_templates(samples_dir='samples'):
+    """載入所有麻將牌模板"""
     templates = {}
+    
+    # 載入萬子 (1m-9m)
     for i in range(1, 10):
         filename = f"{i}m.png"
         filepath = os.path.join(samples_dir, filename)
@@ -16,18 +19,105 @@ def load_wan_templates(samples_dir='samples'):
             if template is not None:
                 templates[f"{i}m"] = template
                 print(f"  載入: {i}m ({template.shape[1]}x{template.shape[0]})")
+    
+    # 載入筒子 (1p-9p)
+    for i in range(1, 10):
+        filename = f"{i}p.png"
+        filepath = os.path.join(samples_dir, filename)
+        if os.path.exists(filepath):
+            template = cv2.imread(filepath, cv2.IMREAD_COLOR)
+            if template is not None:
+                templates[f"{i}p"] = template
+                print(f"  載入: {i}p ({template.shape[1]}x{template.shape[0]})")
+    
+    # 載入條子 (1s-9s)
+    for i in range(1, 10):
+        filename = f"{i}s.png"
+        filepath = os.path.join(samples_dir, filename)
+        if os.path.exists(filepath):
+            template = cv2.imread(filepath, cv2.IMREAD_COLOR)
+            if template is not None:
+                templates[f"{i}s"] = template
+                print(f"  載入: {i}s ({template.shape[1]}x{template.shape[0]})")
+    
+    # 載入字牌
+    word_tiles = ['east', 'south', 'west', 'north', 'middle', 'fa', 'white']
+    for tile_name in word_tiles:
+        filename = f"{tile_name}.png"
+        filepath = os.path.join(samples_dir, filename)
+        if os.path.exists(filepath):
+            template = cv2.imread(filepath, cv2.IMREAD_COLOR)
+            if template is not None:
+                templates[tile_name] = template
+                print(f"  載入: {tile_name} ({template.shape[1]}x{template.shape[0]})")
+    
     return templates
 
-def match_templates(image, templates, threshold=0.7, scale_factor=0.5):
+def _match_single_template(args):
     """
-    在圖片中進行模板匹配（優化速度版本）
+    單個模板匹配的輔助函數（用於多線程）
+    :param args: (label, template, small_image, scale_factor, threshold, orig_w, orig_h)
+    :return: 檢測結果列表
+    """
+    label, template, small_image, scale_factor, threshold, orig_w, orig_h = args
+    detections = []
+    
+    # 縮放模板以匹配縮小的圖片
+    if scale_factor < 1.0:
+        small_template = cv2.resize(template, (0, 0), fx=scale_factor, fy=scale_factor)
+    else:
+        small_template = template
+    
+    # 檢查模板是否大於圖片
+    if small_template.shape[1] > small_image.shape[1] or small_template.shape[0] > small_image.shape[0]:
+        return detections
+    
+    # 模板匹配
+    result = cv2.matchTemplate(small_image, small_template, cv2.TM_CCOEFF_NORMED)
+    
+    # 使用更高效的方法找多個匹配點
+    max_matches_per_template = 20  # 每種牌最多找 20 個匹配點
+    
+    # 先找所有超過閾值的位置
+    locations = np.where(result >= threshold)
+    
+    # 如果匹配點太多，只取前 N 個最佳匹配
+    if len(locations[0]) > 0:
+        # 取得所有匹配點的信心度
+        confidences = result[locations]
+        # 排序並取前 N 個
+        top_indices = np.argsort(confidences)[-max_matches_per_template:][::-1]
+        
+        for idx in top_indices:
+            pt_y, pt_x = locations[0][idx], locations[1][idx]
+            confidence = confidences[idx]
+            
+            # 將座標轉換回原始圖片大小
+            x = int(pt_x / scale_factor)
+            y = int(pt_y / scale_factor)
+            
+            detections.append({
+                'x': x,
+                'y': y,
+                'w': orig_w,
+                'h': orig_h,
+                'label': label,
+                'confidence': float(confidence)
+            })
+    
+    return detections
+
+def match_templates(image, templates, threshold=0.7, scale_factor=0.5, max_workers=None):
+    """
+    在圖片中進行模板匹配（多線程優化版本）
     :param image: 輸入圖片
     :param templates: 模板字典 {label: template_image}
     :param threshold: 匹配閾值
     :param scale_factor: 縮放因子（降低解析度以加速，0.5 表示縮小到一半）
+    :param max_workers: 最大線程數（None 表示自動選擇）
     :return: 檢測結果列表 [(x, y, w, h, label, confidence), ...]
     """
-    detections = []
+    all_detections = []
     
     # 降低圖片解析度以加速匹配
     if scale_factor < 1.0:
@@ -36,62 +126,36 @@ def match_templates(image, templates, threshold=0.7, scale_factor=0.5):
         small_image = image
         scale_factor = 1.0
     
+    # 準備所有模板的參數
+    template_args = []
     for label, template in templates.items():
         h, w = template.shape[:2]
+        template_args.append((label, template, small_image, scale_factor, threshold, w, h))
+    
+    # 使用多線程並行處理所有模板
+    if max_workers is None:
+        # 自動選擇線程數（通常為 CPU 核心數）
+        max_workers = 12
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 提交所有任務
+        futures = [executor.submit(_match_single_template, args) for args in template_args]
         
-        # 縮放模板以匹配縮小的圖片
-        if scale_factor < 1.0:
-            small_template = cv2.resize(template, (0, 0), fx=scale_factor, fy=scale_factor)
-        else:
-            small_template = template
-        
-        # 檢查模板是否大於圖片
-        if small_template.shape[1] > small_image.shape[1] or small_template.shape[0] > small_image.shape[0]:
-            continue
-        
-        # 模板匹配
-        result = cv2.matchTemplate(small_image, small_template, cv2.TM_CCOEFF_NORMED)
-        
-        # 使用更高效的方法找多個匹配點
-        # 方法：找前 N 個最佳匹配點（而不是所有超過閾值的點）
-        max_matches_per_template = 20  # 每種牌最多找 20 個匹配點
-        
-        # 先找所有超過閾值的位置
-        locations = np.where(result >= threshold)
-        
-        # 如果匹配點太多，只取前 N 個最佳匹配
-        if len(locations[0]) > 0:
-            # 取得所有匹配點的信心度
-            confidences = result[locations]
-            # 排序並取前 N 個
-            top_indices = np.argsort(confidences)[-max_matches_per_template:][::-1]
-            
-            for idx in top_indices:
-                pt_y, pt_x = locations[0][idx], locations[1][idx]
-                confidence = confidences[idx]
-                
-                # 將座標轉換回原始圖片大小
-                x = int(pt_x / scale_factor)
-                y = int(pt_y / scale_factor)
-                orig_w = w
-                orig_h = h
-                
-                detections.append({
-                    'x': x,
-                    'y': y,
-                    'w': orig_w,
-                    'h': orig_h,
-                    'label': label,
-                    'confidence': float(confidence)
-                })
+        # 收集結果
+        for future in as_completed(futures):
+            try:
+                detections = future.result()
+                all_detections.extend(detections)
+            except Exception as e:
+                print(f"模板匹配錯誤: {e}")
     
     # 簡單的 NMS：移除重疊的檢測結果
-    if len(detections) > 0:
+    if len(all_detections) > 0:
         # 按信心度排序
-        detections = sorted(detections, key=lambda x: x['confidence'], reverse=True)
+        all_detections = sorted(all_detections, key=lambda x: x['confidence'], reverse=True)
         
         filtered = []
-        for det in detections:
+        for det in all_detections:
             overlap = False
             for selected in filtered:
                 # 計算重疊區域
@@ -113,9 +177,9 @@ def match_templates(image, templates, threshold=0.7, scale_factor=0.5):
             if not overlap:
                 filtered.append(det)
         
-        detections = filtered
+        all_detections = filtered
     
-    return detections
+    return all_detections
 
 def draw_detections(image, detections):
     """在圖片上繪製檢測結果"""
@@ -162,13 +226,13 @@ def main():
         # 影片模式
         print(f"使用影片模式: {video_path}")
         
-        # 載入萬子模板
-        print("\n正在載入萬子模板...")
-        templates = load_wan_templates()
+        # 載入所有麻將牌模板
+        print("\n正在載入麻將牌模板...")
+        templates = load_all_templates()
         if len(templates) == 0:
-            print("警告: 找不到萬子模板，將不進行檢測")
+            print("警告: 找不到模板，將不進行檢測")
         else:
-            print(f"共載入 {len(templates)} 個萬子模板\n")
+            print(f"共載入 {len(templates)} 個模板\n")
         
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -223,7 +287,7 @@ def main():
             if enable_detection and len(templates) > 0:
                 try:
                     # 使用 0.5 縮放因子加速（可以調整：0.3-0.7，越小越快但可能降低準確度）
-                    detections = match_templates(current_frame, templates, threshold=0.65, scale_factor=0.2)
+                    detections = match_templates(current_frame, templates, threshold=0.8, scale_factor=0.2)
                 except Exception as e:
                     print(f"檢測錯誤: {e}")
                     detections = []
