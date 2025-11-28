@@ -284,10 +284,30 @@ def main():
             
             # 進行模板匹配（如果啟用）
             detections = []
+            hand_tiles = []  # 手牌
+            drawn_tile = None  # 摸到的牌
+            
             if enable_detection and len(templates) > 0:
                 try:
-                    # 使用 0.5 縮放因子加速（可以調整：0.3-0.7，越小越快但可能降低準確度）
+                    # 使用模板匹配
                     detections = match_templates(current_frame, templates, threshold=0.8, scale_factor=0.2)
+                    
+                    # 根據檢測結果區分手牌和摸到的牌
+                    # 按照x座標排序（從左到右）
+                    sorted_detections = sorted(detections, key=lambda d: d['x'])
+                    
+                    if len(detections) == 16:
+                        # 16張牌，全部都是手牌
+                        hand_tiles = [det['label'] for det in sorted_detections]
+                        drawn_tile = None
+                    elif len(detections) == 17:
+                        # 17張牌，最右邊的是摸到的牌，其他16張是手牌
+                        hand_tiles = [det['label'] for det in sorted_detections[:16]]
+                        drawn_tile = sorted_detections[16]['label']
+                    elif len(detections) > 0:
+                        # 其他情況，全部當作手牌處理
+                        hand_tiles = [det['label'] for det in sorted_detections]
+                        drawn_tile = None
                 except Exception as e:
                     print(f"檢測錯誤: {e}")
                     detections = []
@@ -297,12 +317,25 @@ def main():
             
             # 顯示資訊
             detection_status = "ON" if enable_detection else "OFF"
-            info_text = f"Frame: {frame_number}/{total_frames} | Detections: {len(detections)} [{detection_status}] | {'PAUSED' if is_paused else 'PLAYING'}"
+            info_lines = [
+                f"Frame: {frame_number}/{total_frames} | Detections: {len(detections)} [{detection_status}] | {'PAUSED' if is_paused else 'PLAYING'}"
+            ]
+            
             if not is_paused:
                 actual_fps = 1.0 / (time.time() - loop_time) if (time.time() - loop_time) > 0 else 0
-                info_text += f" | FPS: {actual_fps:.2f}"
-            cv2.putText(display_img, info_text, (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                info_lines[0] += f" | FPS: {actual_fps:.2f}"
+            
+            if len(hand_tiles) > 0:
+                info_lines.append(f"Hand ({len(hand_tiles)} tiles): {', '.join(hand_tiles)}")
+            
+            if drawn_tile:
+                info_lines.append(f"Drawn tile: {drawn_tile}")
+            
+            # 在圖片上顯示資訊
+            y_offset = 30
+            for i, line in enumerate(info_lines):
+                cv2.putText(display_img, line, (10, y_offset + i * 25),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             
             # 縮小顯示
             display_img = cv2.resize(display_img, (0, 0), fx=0.6, fy=0.6)
@@ -337,29 +370,95 @@ def main():
             print("請確認遊戲已開啟，或使用影片模式: python main_preview.py <影片路徑>")
             return
 
-        loop_time = time.time()
+        # 載入所有麻將牌模板
+        print("\n正在載入麻將牌模板...")
+        templates = load_all_templates()
+        if len(templates) == 0:
+            print("警告: 找不到模板，將不進行檢測")
+        else:
+            print(f"共載入 {len(templates)} 個模板\n")
         
-        print("按下 'q' 鍵退出預覽...")
+        print("操作說明:")
+        print("  Q 鍵: 退出")
+        print("  T 鍵: 開關檢測功能\n")
+
+        loop_time = time.time()
+        enable_detection = True  # 檢測開關
 
         while True:
             # 1. 獲取截圖
             screenshot = wincap.get_screenshot()
 
-            # 2. 這裡可以加入影像處理邏輯 (例如辨識手牌)
-            # 目前先不做處理，直接顯示
-
-            # 3. 顯示結果
-            # 縮小一點顯示，避免擋住整個螢幕
-            display_img = cv2.resize(screenshot, (0, 0), fx=0.5, fy=0.5)
-            cv2.imshow('Computer Vision', display_img)
-
+            # 2. 進行模板匹配（如果啟用）
+            detections = []
+            hand_tiles = []  # 手牌
+            drawn_tile = None  # 摸到的牌
+            
+            if enable_detection and len(templates) > 0:
+                try:
+                    # 使用模板匹配
+                    detections = match_templates(screenshot, templates, threshold=0.8, scale_factor=0.2)
+                    
+                    # 根據檢測結果區分手牌和摸到的牌
+                    # 按照x座標排序（從左到右）
+                    sorted_detections = sorted(detections, key=lambda d: d['x'])
+                    
+                    if len(detections) == 16:
+                        # 16張牌，全部都是手牌
+                        hand_tiles = [det['label'] for det in sorted_detections]
+                        drawn_tile = None
+                    elif len(detections) == 17:
+                        # 17張牌，最右邊的是摸到的牌，其他16張是手牌
+                        hand_tiles = [det['label'] for det in sorted_detections[:16]]
+                        drawn_tile = sorted_detections[16]['label']
+                    elif len(detections) > 0:
+                        # 其他情況，全部當作手牌處理
+                        hand_tiles = [det['label'] for det in sorted_detections]
+                        drawn_tile = None
+                except Exception as e:
+                    print(f"檢測錯誤: {e}")
+                    detections = []
+            
+            # 3. 繪製檢測結果
+            display_img = draw_detections(screenshot, detections)
+            
+            # 4. 顯示資訊
+            detection_status = "ON" if enable_detection else "OFF"
+            info_lines = [
+                f"Detection: {detection_status} | Found {len(detections)} tiles",
+            ]
+            
+            if len(hand_tiles) > 0:
+                info_lines.append(f"Hand ({len(hand_tiles)} tiles): {', '.join(hand_tiles)}")
+            
+            if drawn_tile:
+                info_lines.append(f"Drawn tile: {drawn_tile}")
+            
+            # 在圖片上顯示資訊
+            y_offset = 30
+            for i, line in enumerate(info_lines):
+                cv2.putText(display_img, line, (10, y_offset + i * 25),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            
             # 計算並顯示 FPS
-            print(f'FPS: {1 / (time.time() - loop_time):.2f}', end='\r')
+            actual_fps = 1.0 / (time.time() - loop_time) if (time.time() - loop_time) > 0 else 0
+            fps_text = f"FPS: {actual_fps:.2f}"
+            cv2.putText(display_img, fps_text, (10, y_offset + len(info_lines) * 25),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            
+            # 縮小一點顯示，避免擋住整個螢幕
+            display_img = cv2.resize(display_img, (0, 0), fx=0.5, fy=0.5)
+            cv2.imshow('Computer Vision', display_img)
+            
             loop_time = time.time()
 
-            # 按 'q' 退出
-            if cv2.waitKey(1) == ord('q'):
+            # 按鍵處理
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
                 break
+            elif key == ord('t') or key == ord('T'):  # T 鍵：開關檢測
+                enable_detection = not enable_detection
+                print(f"檢測功能: {'開啟' if enable_detection else '關閉'}")
 
     cv2.destroyAllWindows()
     print("\n程式結束")
