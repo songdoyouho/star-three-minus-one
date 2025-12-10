@@ -5,6 +5,7 @@ import sys
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from window_capture import WindowCapture
+from calculate_shanten import suggest_discard
 
 def load_all_templates(samples_dir='samples'):
     """載入所有麻將牌模板"""
@@ -287,6 +288,7 @@ def main():
             hand_tiles = []  # 手牌
             drawn_tile = None  # 摸到的牌
             
+            suggestion = None
             if enable_detection and len(templates) > 0:
                 try:
                     # 使用模板匹配
@@ -304,6 +306,12 @@ def main():
                         # 17張牌，最右邊的是摸到的牌，其他16張是手牌
                         hand_tiles = [det['label'] for det in sorted_detections[:16]]
                         drawn_tile = sorted_detections[16]['label']
+                        # 嘗試給出打牌建議
+                        try:
+                            full_hand = [det['label'] for det in sorted_detections]
+                            suggestion = suggest_discard(full_hand)
+                        except Exception as e:
+                            print(f"建議計算失敗: {e}")
                     elif len(detections) > 0:
                         # 其他情況，全部當作手牌處理
                         hand_tiles = [det['label'] for det in sorted_detections]
@@ -330,6 +338,9 @@ def main():
             
             if drawn_tile:
                 info_lines.append(f"Drawn tile: {drawn_tile}")
+
+            if suggestion:
+                info_lines.append(f"Suggest discard: {suggestion['tile']} | Shanten: {suggestion['shanten_after']}")
             
             # 在圖片上顯示資訊
             y_offset = 30
@@ -394,6 +405,7 @@ def main():
             hand_tiles = []  # 手牌
             drawn_tile = None  # 摸到的牌
             
+            suggestion = None
             if enable_detection and len(templates) > 0:
                 try:
                     # 使用模板匹配
@@ -411,6 +423,12 @@ def main():
                         # 17張牌，最右邊的是摸到的牌，其他16張是手牌
                         hand_tiles = [det['label'] for det in sorted_detections[:16]]
                         drawn_tile = sorted_detections[16]['label']
+                        # 嘗試給出打牌建議
+                        try:
+                            full_hand = [det['label'] for det in sorted_detections]
+                            suggestion = suggest_discard(full_hand)
+                        except Exception as e:
+                            print(f"建議計算失敗: {e}")
                     elif len(detections) > 0:
                         # 其他情況，全部當作手牌處理
                         hand_tiles = [det['label'] for det in sorted_detections]
@@ -433,6 +451,9 @@ def main():
             
             if drawn_tile:
                 info_lines.append(f"Drawn tile: {drawn_tile}")
+
+            if suggestion:
+                info_lines.append(f"Suggest discard: {suggestion['tile']} | Shanten: {suggestion['shanten_after']}")
             
             # 在圖片上顯示資訊
             y_offset = 30

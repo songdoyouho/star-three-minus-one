@@ -1,4 +1,4 @@
-from typing import List, Dict, Tuple, Set
+from typing import List, Dict, Tuple, Set, Any
 from collections import defaultdict
 
 class ShantenCalculator:
@@ -44,17 +44,6 @@ class ShantenCalculator:
                 return ('suo', number)
         
         raise ValueError(f"無法解析牌: {tile}")
-    
-    def _is_numeric_tile(self, tile: str) -> bool:
-        """判斷是否為數字牌"""
-        if len(tile) >= 2:
-            return tile[1] in ['m', 'p', 's']
-        return False
-    
-    def _is_word_tile(self, tile: str) -> bool:
-        """判斷是否為字牌"""
-        word_tiles = ['east', 'south', 'west', 'north', 'middle', 'fa', 'white']
-        return tile in word_tiles
     
     def calculate_max_melds(self, hand: List[str]) -> int:
         """計算手牌中最多可以形成的面子數量
@@ -775,6 +764,259 @@ class ShantenCalculator:
                     tiles.append(self._tile_to_string(tile_type, num))
         return tiles
 
+    # ------------------------------------------------------------
+    # 等待牌計算相關
+    # ------------------------------------------------------------
+    def _all_tile_labels(self) -> List[str]:
+        """回傳34種牌的標籤列表"""
+        tiles = []
+        for i in range(1, 10):
+            tiles.extend([f"{i}m", f"{i}p", f"{i}s"])
+        tiles.extend(['east', 'south', 'west', 'north', 'middle', 'fa', 'white'])
+        return tiles
+
+    def _can_form_complete_hand(self, hand: List[str]) -> bool:
+        """判斷17張牌是否已經和牌（5個面子 + 1對子）"""
+        if len(hand) != 17:
+            return False
+
+        grouped = self._group_tiles(hand)
+
+        # 嘗試每一種可能的對子作為將牌
+        for tile_type, numbers in grouped.items():
+            for num, count in list(numbers.items()):
+                if count >= 2:
+                    grouped_copy = {t: n.copy() for t, n in grouped.items()}
+                    # 先移除對子
+                    grouped_copy[tile_type][num] -= 2
+                    if grouped_copy[tile_type][num] == 0:
+                        del grouped_copy[tile_type][num]
+                    if len(grouped_copy[tile_type]) == 0:
+                        del grouped_copy[tile_type]
+
+                    # 嘗試拆成5個面子
+                    if self._can_form_all_melds(grouped_copy):
+                        return True
+        return False
+
+    def _can_form_all_melds(self, grouped_tiles: Dict[str, Dict[int, int]]) -> bool:
+        """檢查所有剩餘的牌能否完全拆成面子（每個面子3張）"""
+        for tile_type, numbers in grouped_tiles.items():
+            if tile_type in ['wan', 'tong', 'suo']:
+                if not self._can_form_melds_numbers(numbers):
+                    return False
+            else:
+                # 字牌只能刻子，數量需為3的倍數
+                for _, count in numbers.items():
+                    if count % 3 != 0:
+                        return False
+        return True
+
+    def _can_form_melds_numbers(self, numbers: Dict[int, int]) -> bool:
+        """檢查數字牌是否能拆成面子"""
+        counts = defaultdict(int, numbers)
+
+        def backtrack(counts_dict: Dict[int, int]) -> bool:
+            # 移除為0的鍵
+            to_delete = [k for k, v in list(counts_dict.items()) if v == 0]
+            for k in to_delete:
+                del counts_dict[k]
+
+            if not counts_dict:
+                return True
+
+            first = min(counts_dict.keys())
+
+            # 嘗試刻子
+            if counts_dict[first] >= 3:
+                counts_dict[first] -= 3
+                if backtrack(counts_dict):
+                    counts_dict[first] += 3
+                    return True
+                counts_dict[first] += 3
+
+            # 嘗試順子 first, first+1, first+2
+            if (counts_dict.get(first, 0) > 0 and
+                counts_dict.get(first + 1, 0) > 0 and
+                counts_dict.get(first + 2, 0) > 0):
+                counts_dict[first] -= 1
+                counts_dict[first + 1] -= 1
+                counts_dict[first + 2] -= 1
+                if backtrack(counts_dict):
+                    counts_dict[first] += 1
+                    counts_dict[first + 1] += 1
+                    counts_dict[first + 2] += 1
+                    return True
+                counts_dict[first] += 1
+                counts_dict[first + 1] += 1
+                counts_dict[first + 2] += 1
+
+            return False
+
+        return backtrack(counts)
+
+    def _count_waiting_tiles(self, hand_16: List[str]) -> Tuple[int, List[str]]:
+        """在進聽數為0的情況下，計算能胡的等待牌數量"""
+        waits = []
+        for tile in self._all_tile_labels():
+            candidate = hand_16 + [tile]
+            if self._can_form_complete_hand(candidate):
+                waits.append(tile)
+        return len(waits), waits
+
+    def _count_improving_tiles(self, hand_16: List[str], current_shanten: int) -> Tuple[int, List[str]]:
+        """計算能讓進聽數減少的進牌張數
+        
+        對於16張牌（進聽數為 current_shanten），計算加入哪些牌後，
+        能讓進聽數進一步減少（變成 < current_shanten）。
+        
+        Args:
+            hand_16: 16張牌的列表
+            current_shanten: 當前16張牌的進聽數
+            
+        Returns:
+            Tuple[int, List[str]]: (進牌數量, 進牌列表)
+        """
+        improving_tiles = []
+        
+        # 嘗試加入每一種可能的牌
+        for tile in self._all_tile_labels():
+            # 加入這張牌後變成17張
+            hand_17 = hand_16 + [tile]
+            
+            # 計算這17張牌的最佳打牌選項（打掉某張後的最小進聽數）
+            # 方法：對每張牌，計算打掉後剩餘16張的進聽數，取最小值
+            min_shanten_after = None
+            
+            for i in range(len(hand_17)):
+                hand_after_discard = hand_17[:i] + hand_17[i+1:]
+                try:
+                    shanten = self.calculate_shanten(hand_after_discard)
+                    if min_shanten_after is None or shanten < min_shanten_after:
+                        min_shanten_after = shanten
+                except:
+                    continue
+            
+            # 如果加入這張牌後，最佳進聽數 < 當前進聽數，則這張牌是進牌
+            if min_shanten_after is not None and min_shanten_after < current_shanten:
+                improving_tiles.append(tile)
+        
+        return len(improving_tiles), improving_tiles
+
+    def suggest_discard(self, hand_17: List[str]) -> Dict[str, Any]:
+        """建議17張牌中應該打哪一張
+        
+        這個方法會對每張牌進行評估，計算打掉該牌後剩餘16張牌的進聽數，
+        然後選擇進聽數最小的牌作為建議。
+        
+        Args:
+            hand_17: 17張牌的列表（16張手牌 + 1張摸到的牌），每個元素是牌字符串
+            
+        Returns:
+            Dict[str, any]: 建議結果，包含：
+                - 'tile': 建議打掉的牌
+                - 'shanten_after': 打掉該牌後的進聽數
+                - 'all_options': 所有可能的打牌選項列表，每個選項包含：
+                    - 'tile': 牌
+                    - 'shanten': 打掉後的進聽數
+                - 'best_options': 所有最佳選項列表（進聽數相同的牌）
+                - 'reason': 建議原因
+        """
+        if len(hand_17) != 17:
+            raise ValueError(f"手牌必須是17張，目前有 {len(hand_17)} 張")
+        
+        # 儲存所有可能的打牌選項
+        options = []
+        
+        # 對每張牌進行評估
+        for i, tile in enumerate(hand_17):
+            # 創建移除該牌後的16張牌列表
+            hand_16 = hand_17[:i] + hand_17[i+1:]
+            
+            # 計算這16張牌的進聽數
+            try:
+                shanten = self.calculate_shanten(hand_16)
+                options.append({
+                    'tile': tile,
+                    'shanten': shanten,
+                    'index': i  # 紀錄位置，處理重複牌時使用
+                })
+            except Exception as e:
+                # 如果計算失敗，跳過這張牌
+                print(f"警告: 計算打掉 {tile} 後的進聽數時發生錯誤: {e}")
+                continue
+        
+        if len(options) == 0:
+            raise ValueError("無法計算任何打牌選項")
+        
+        # 找出進聽數最小的選項
+        best_option = min(options, key=lambda x: x['shanten'])
+        
+        # 找出所有進聽數相同的選項（可能有多張牌都能達到相同進聽數）
+        best_shanten = best_option['shanten']
+        best_options = [opt for opt in options if opt['shanten'] == best_shanten]
+        
+        # 若進聽數為0，計算等待張數，優先等待越多的牌
+        if best_shanten == 0:
+            enriched = []
+            for opt in best_options:
+                hand_16 = hand_17[:opt['index']] + hand_17[opt['index'] + 1:]
+                wait_count, wait_tiles = self._count_waiting_tiles(hand_16)
+                opt = opt.copy()
+                opt['wait_count'] = wait_count
+                opt['wait_tiles'] = wait_tiles
+                opt['improving_count'] = 0  # 聽牌時不需要進牌
+                opt['improving_tiles'] = []
+                enriched.append(opt)
+            max_wait = max(enriched, key=lambda x: x['wait_count'])['wait_count']
+            best_options = [o for o in enriched if o['wait_count'] == max_wait]
+        else:
+            # 若進聽數 > 0，計算進牌張數，優先進牌越多的牌
+            enriched = []
+            for opt in best_options:
+                hand_16 = hand_17[:opt['index']] + hand_17[opt['index'] + 1:]
+                improving_count, improving_tiles = self._count_improving_tiles(hand_16, best_shanten)
+                opt = opt.copy()
+                opt['wait_count'] = 0  # 未聽牌時沒有等待牌
+                opt['wait_tiles'] = []
+                opt['improving_count'] = improving_count
+                opt['improving_tiles'] = improving_tiles
+                enriched.append(opt)
+            
+            # 選擇進牌張數最多的選項
+            if len(enriched) > 1:
+                max_improving = max(enriched, key=lambda x: x['improving_count'])['improving_count']
+                best_options = [o for o in enriched if o['improving_count'] == max_improving]
+            else:
+                best_options = enriched
+
+        # 如果有多張牌進聽數（及等待數）相同，仍選第一張
+        suggested_tile = best_options[0]['tile']
+        
+        # 生成建議原因
+        if best_shanten == 0:
+            reason = f"打掉這張牌後已聽牌，等待 {best_options[0]['wait_count']} 張"
+        elif len(best_options) > 1:
+            improving_count = best_options[0].get('improving_count', 0)
+            if improving_count > 0:
+                reason = f"打掉這張牌後進聽數為 {best_shanten}，有 {improving_count} 張進牌（共有 {len(best_options)} 張牌可達到此進聽數）"
+            else:
+                reason = f"打掉這張牌後進聽數為 {best_shanten}（共有 {len(best_options)} 張牌可達到此進聽數）"
+        else:
+            improving_count = best_options[0].get('improving_count', 0)
+            if improving_count > 0:
+                reason = f"打掉這張牌後進聽數為 {best_shanten}，有 {improving_count} 張進牌"
+            else:
+                reason = f"打掉這張牌後進聽數為 {best_shanten}，是最佳選擇"
+        
+        return {
+            'tile': suggested_tile,
+            'shanten_after': best_shanten,
+            'all_options': options,
+            'best_options': best_options,  # 所有最佳選項
+            'reason': reason
+        }
+
 def calculate_max_melds(hand: List[str]) -> int:
     """計算手牌中最多可以形成的面子數量的便捷函式
     
@@ -845,4 +1087,21 @@ def calculate_shanten(hand: List[str]) -> int:
         int: 進聴數
     """
     calculator = ShantenCalculator()
-    return calculator.calculate_shanten(hand) 
+    return calculator.calculate_shanten(hand)
+
+def suggest_discard(hand_17: List[str]) -> Dict[str, Any]:
+    """建議17張牌中應該打哪一張的便捷函式
+    
+    Args:
+        hand_17: 17張牌的列表（16張手牌 + 1張摸到的牌），每個元素是牌字符串
+        
+    Returns:
+        Dict[str, any]: 建議結果，包含：
+            - 'tile': 建議打掉的牌
+            - 'shanten_after': 打掉該牌後的進聽數
+            - 'all_options': 所有可能的打牌選項列表
+            - 'best_options': 所有最佳選項列表
+            - 'reason': 建議原因
+    """
+    calculator = ShantenCalculator()
+    return calculator.suggest_discard(hand_17) 
