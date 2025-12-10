@@ -95,6 +95,141 @@ class ShantenCalculator:
         
         raise ValueError(f"無法轉換牌: {tile_type}, {number}")
     
+    def _tile_to_chinese(self, tile: str) -> str:
+        """將牌字符串轉換為中文顯示格式（僅用於 command line）
+        
+        Args:
+            tile: 牌字符串，例如 "1m", "2p", "east"
+            
+        Returns:
+            str: 中文格式，例如 "一萬", "二筒", "東"
+        """
+        # 字牌中文映射
+        word_tiles_chinese = {
+            'east': '東',
+            'south': '南',
+            'west': '西',
+            'north': '北',
+            'middle': '中',
+            'fa': '發',
+            'white': '白'
+        }
+        
+        if tile in word_tiles_chinese:
+            return word_tiles_chinese[tile]
+        
+        # 數字牌
+        if len(tile) >= 2 and tile[0].isdigit():
+            number = int(tile[0])
+            suit = tile[1]
+            
+            # 數字中文映射
+            number_chinese = {
+                1: '一', 2: '二', 3: '三', 4: '四', 5: '五',
+                6: '六', 7: '七', 8: '八', 9: '九'
+            }
+            
+            # 花色中文映射
+            suit_chinese = {
+                'm': '萬',
+                'p': '筒',
+                's': '條'
+            }
+            
+            if number in number_chinese and suit in suit_chinese:
+                return f"{number_chinese[number]}{suit_chinese[suit]}"
+        
+        # 如果無法轉換，返回原字符串
+        return tile
+    
+    def visualize_hand(self, hand: List[str], use_chinese: bool = True) -> str:
+        """視覺化手牌，返回格式化的字符串
+        
+        Args:
+            hand: 手牌列表
+            use_chinese: 是否使用中文顯示（True 用於 command line，False 用於 OpenCV）
+            
+        Returns:
+            str: 格式化的手牌字符串
+        """
+        if len(hand) == 0:
+            return "空手牌"
+        
+        # 將牌按照類型分組
+        grouped = self._group_tiles(hand)
+        
+        result_parts = []
+        
+        # 處理數字牌（萬、筒、條）
+        suit_order = [('wan', '萬'), ('tong', '筒'), ('suo', '條')]
+        for tile_type, suit_name in suit_order:
+            if tile_type in grouped:
+                numbers = grouped[tile_type]
+                tiles_in_suit = []
+                
+                # 按數字排序
+                for num in sorted(numbers.keys()):
+                    count = numbers[num]
+                    tile_str = self._tile_to_string(tile_type, num)
+                    
+                    if use_chinese:
+                        # 使用中文顯示
+                        chinese_tile = self._tile_to_chinese(tile_str)
+                        tiles_in_suit.extend([chinese_tile] * count)
+                    else:
+                        # 使用英文格式（用於 OpenCV）
+                        tiles_in_suit.extend([tile_str] * count)
+                
+                if tiles_in_suit:
+                    if use_chinese:
+                        result_parts.append(f"{suit_name}: {','.join(tiles_in_suit)}")
+                    else:
+                        result_parts.append(f"{tile_type}: {','.join(tiles_in_suit)}")
+        
+        # 處理字牌（風牌和三元牌）
+        word_groups = {
+            'feng': [],
+            'sanyuan': []
+        }
+        
+        word_tiles_map = {
+            'east': ('feng', '東'),
+            'south': ('feng', '南'),
+            'west': ('feng', '西'),
+            'north': ('feng', '北'),
+            'middle': ('sanyuan', '中'),
+            'fa': ('sanyuan', '發'),
+            'white': ('sanyuan', '白')
+        }
+        
+        for tile_type in ['feng', 'sanyuan']:
+            if tile_type in grouped:
+                numbers = grouped[tile_type]
+                tiles_in_group = []
+                
+                for num in sorted(numbers.keys()):
+                    count = numbers[num]
+                    tile_str = self._tile_to_string(tile_type, num)
+                    
+                    if use_chinese:
+                        chinese_tile = self._tile_to_chinese(tile_str)
+                        tiles_in_group.extend([chinese_tile] * count)
+                    else:
+                        tiles_in_group.extend([tile_str] * count)
+                
+                if tiles_in_group:
+                    if use_chinese:
+                        group_name = '風' if tile_type == 'feng' else '三元'
+                        result_parts.append(f"{group_name}: {','.join(tiles_in_group)}")
+                    else:
+                        result_parts.append(f"{tile_type}: {','.join(tiles_in_group)}")
+        
+        # 組合結果
+        if result_parts:
+            return " | ".join(result_parts)
+        else:
+            return "無法解析手牌"
+    
     def find_tatsu(self, hand: List[str]) -> List[Tuple[str, str, str]]:
         """尋找手牌中的所有搭子
         
@@ -1104,4 +1239,47 @@ def suggest_discard(hand_17: List[str]) -> Dict[str, Any]:
             - 'reason': 建議原因
     """
     calculator = ShantenCalculator()
-    return calculator.suggest_discard(hand_17) 
+    return calculator.suggest_discard(hand_17)
+
+def visualize_hand(hand: List[str], use_chinese: bool = True) -> str:
+    """視覺化手牌的便捷函式
+    
+    將手牌轉換為格式化的字符串，方便顯示。
+    在 command line 使用中文顯示，在 OpenCV 視窗中使用英文格式。
+    
+    Args:
+        hand: 手牌列表，每個元素是牌字符串，例如 ["1m", "2m", "east"]
+        use_chinese: 是否使用中文顯示
+            - True: 用於 command line，顯示為 "萬: 一,二,三 | 筒: 四,五 | 字: 東,南"
+            - False: 用於 OpenCV，顯示為 "wan: 1m,2m,3m | tong: 4p,5p | feng: east,south"
+        
+    Returns:
+        str: 格式化的手牌字符串
+        
+    Examples:
+        >>> visualize_hand(["1m", "2m", "3m", "1p", "2p", "east", "south"])
+        '萬: 一,二,三 | 筒: 一,二 | 風: 東,南'
+        
+        >>> visualize_hand(["1m", "2m", "3m", "1p", "2p", "east", "south"], use_chinese=False)
+        'wan: 1m,2m,3m | tong: 1p,2p | feng: east,south'
+    """
+    calculator = ShantenCalculator()
+    return calculator.visualize_hand(hand, use_chinese)
+
+def tile_to_chinese(tile: str) -> str:
+    """將單張牌轉換為中文顯示格式的便捷函式
+    
+    Args:
+        tile: 牌字符串，例如 "1m", "2p", "east"
+        
+    Returns:
+        str: 中文格式，例如 "一萬", "二筒", "東"
+        
+    Examples:
+        >>> tile_to_chinese("1m")
+        '一萬'
+        >>> tile_to_chinese("east")
+        '東'
+    """
+    calculator = ShantenCalculator()
+    return calculator._tile_to_chinese(tile) 

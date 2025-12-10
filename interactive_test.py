@@ -11,7 +11,9 @@ from calculate_shanten import (
     find_tatsu,
     count_tatsu,
     find_max_tatsu,
-    find_pairs
+    find_pairs,
+    visualize_hand,
+    tile_to_chinese
 )
 
 def parse_hand_input(input_str: str) -> list:
@@ -59,25 +61,13 @@ def print_tile_list(tiles: list, title: str = "手牌"):
     """格式化輸出牌列表"""
     print(f"\n{title}:")
     print(f"  數量: {len(tiles)} 張")
-    print(f"  內容: {', '.join(tiles)}")
     
-    # 按類型分組顯示
-    grouped = {}
-    for tile in tiles:
-        if tile[0].isdigit():
-            suit = tile[1]
-            if suit not in grouped:
-                grouped[suit] = []
-            grouped[suit].append(tile)
-        else:
-            if '字牌' not in grouped:
-                grouped['字牌'] = []
-            grouped['字牌'].append(tile)
+    # 使用視覺化功能顯示中文格式
+    visual_str = visualize_hand(tiles, use_chinese=True)
+    print(f"  視覺化: {visual_str}")
     
-    print("  分組:")
-    for key in sorted(grouped.keys()):
-        tiles_str = ', '.join(sorted(grouped[key]))
-        print(f"    {key}: {tiles_str}")
+    # 同時顯示原始格式（用於參考）
+    print(f"  原始格式: {', '.join(tiles)}")
 
 def test_calculate_shanten(hand: list):
     """測試計算進聽數"""
@@ -118,7 +108,9 @@ def test_suggest_discard(hand: list):
     try:
         result = suggest_discard(hand)
         
-        print(f"\n✓ 建議打掉的牌: {result['tile']}")
+        # 使用中文顯示建議打掉的牌
+        discard_tile_chinese = tile_to_chinese(result['tile'])
+        print(f"\n✓ 建議打掉的牌: {discard_tile_chinese} ({result['tile']})")
         print(f"✓ 打掉後的進聽數: {result['shanten_after']}")
         print(f"✓ 建議原因: {result['reason']}")
         
@@ -132,27 +124,32 @@ def test_suggest_discard(hand: list):
                     print(f"\n等待牌資訊:")
                     print(f"  等待數量: {best_opt['wait_count']} 張")
                     wait_tiles = best_opt.get('wait_tiles', [])
-                    if len(wait_tiles) <= 10:
-                        print(f"  等待牌: {', '.join(wait_tiles)}")
+                    # 使用中文顯示等待牌
+                    wait_tiles_chinese = [tile_to_chinese(t) for t in wait_tiles]
+                    if len(wait_tiles_chinese) <= 10:
+                        print(f"  等待牌: {', '.join(wait_tiles_chinese)}")
                     else:
-                        print(f"  等待牌: {', '.join(wait_tiles[:10])}... (共{len(wait_tiles)}張)")
+                        print(f"  等待牌: {', '.join(wait_tiles_chinese[:10])}... (共{len(wait_tiles_chinese)}張)")
             else:
                 # 未聽牌，顯示進牌資訊
                 if best_opt.get('improving_count', 0) > 0:
                     print(f"\n進牌資訊:")
                     print(f"  進牌數量: {best_opt['improving_count']} 張")
                     improving_tiles = best_opt.get('improving_tiles', [])
-                    if len(improving_tiles) <= 10:
-                        print(f"  進牌: {', '.join(improving_tiles)}")
+                    # 使用中文顯示進牌
+                    improving_tiles_chinese = [tile_to_chinese(t) for t in improving_tiles]
+                    if len(improving_tiles_chinese) <= 10:
+                        print(f"  進牌: {', '.join(improving_tiles_chinese)}")
                     else:
-                        print(f"  進牌: {', '.join(improving_tiles[:10])}... (共{len(improving_tiles)}張)")
+                        print(f"  進牌: {', '.join(improving_tiles_chinese[:10])}... (共{len(improving_tiles_chinese)}張)")
         
         # 顯示所有選項（前10個）
         if len(result['all_options']) > 0:
             print(f"\n所有打牌選項（前10個）:")
             for i, opt in enumerate(result['all_options'][:10]):
                 marker = " ← 建議" if opt['tile'] == result['tile'] else ""
-                print(f"  {i+1}. 打掉 {opt['tile']:6s} → 進聽數: {opt['shanten']}{marker}")
+                tile_chinese = tile_to_chinese(opt['tile'])
+                print(f"  {i+1}. 打掉 {tile_chinese:4s} ({opt['tile']:6s}) → 進聽數: {opt['shanten']}{marker}")
             
             if len(result['all_options']) > 10:
                 print(f"  ... (共 {len(result['all_options'])} 個選項)")
