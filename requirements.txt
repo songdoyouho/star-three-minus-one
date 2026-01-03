@@ -1,5 +1,8 @@
 opencv-python
 numpy
 mss
-pygetwindow
-
+# Windows 依賴
+pygetwindow; sys_platform == 'win32'
+# macOS 依賴
+pyobjc-framework-Quartz; sys_platform == 'darwin'
+pyobjc-framework-Cocoa; sys_platform == 'darwin'
