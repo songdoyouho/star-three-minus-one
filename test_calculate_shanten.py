@@ -383,6 +383,19 @@ def test_calculate_shanten_four_triplets_two_pairs():
     shanten_func = calculate_shanten(hand)
     assert_equal(shanten_func, 0, "便捷函式應該返回相同結果")
 
+def test_calculate_shanten_many_tatsu():
+    """測試搭子很多時的進聽數（舊版貪婪算法會多算 1）"""
+    print("\n=== 測試搭子很多時的進聽數 ===")
+    # 拆法：345m（面子）+ 99s（眼）+ 45p、57p、88p、68s（4 個搭子）
+    # 進聽數 = 10 - 2×1 - 4 - 1 = 3
+    hand = ["3m", "4m", "5m", "6m", "9m",
+            "4p", "5p", "5p", "7p", "8p", "8p",
+            "1s", "6s", "8s", "9s", "9s"]
+
+    calculator = ShantenCalculator()
+    shanten = calculator.calculate_shanten(hand)
+    assert_equal(shanten, 3, "這手牌應該是三進聽")
+
 def main():
     """執行所有測試"""
     print("=" * 60)
@@ -411,6 +424,7 @@ def main():
         test_calculate_shanten_no_pairs,
         test_calculate_shanten_user_hand,
         test_calculate_shanten_four_triplets_two_pairs,
+        test_calculate_shanten_many_tatsu,
     ]
     
     passed = 0

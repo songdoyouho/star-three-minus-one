@@ -1,5 +1,6 @@
 from typing import List, Dict, Tuple, Set, Any
 from collections import defaultdict
+from functools import lru_cache
 
 class ShantenCalculator:
     """計算台灣麻將手牌進聽數的類別"""
@@ -567,341 +568,66 @@ class ShantenCalculator:
         return pairs_list
 
     def calculate_shanten(self, hand: List[str]) -> int:
-        """計算手牌的進聴數
-        
-        進聴數是指距離和牌還需要換幾張牌。
-        計算方法：
-        1. 先找出手牌中最大的面子數量
-        2. 將這些面子從手牌中移除
-        3. 在剩餘的牌中找出最多的搭子組合
-        4. 將這些搭子從手牌中移除
-        5. 剩下的是單張
-        
-        台灣麻將規則：
-        - 基本手牌為 16 張
-        - 必須湊齊五組牌加一對眼（四個面子 + 一個對子 + 一個搭子）
-        
-        進聴數計算公式：
-        - 需要的面子數 = 4 - 已有面子數
-        - 如果搭子數量 >= 需要的面子數，則需要進 需要的面子數 張牌
-        - 如果搭子數量 < 需要的面子數，則需要先形成搭子，再升級為面子
-        - 需要的對子數 = 1 - 已有對子數（最多為1）
-        - 進聴數 = 需要進的牌數 + 需要的對子數
-        
+        """計算手牌的進聽數（精確解）
+
+        進聽數 = 距離聽牌還需要換幾張牌（0 = 聽牌）。
+
+        台灣麻將 16 張：胡牌需 5 個面子 + 1 個對子（眼）。
+        做法：枚舉「選哪個對子當眼（或不選）」，再對每種花色完整枚舉
+        面子/搭子的所有拆法，套用標準公式：
+            進聽數 = 2 × 5 - 2 × 面子數 - 搭子數 - (有眼 ? 1 : 0)
+        其中 面子數 + 搭子數 ≤ 5（多出來的搭子沒有用）。
+
         Args:
             hand: 手牌列表，應該是16張牌，每個元素是牌字符串，例如 ["1m", "2m", "east"]
-            
+
         Returns:
-            int: 進聴數
+            int: 進聽數
         """
         if len(hand) != 16:
             raise ValueError(f"手牌必須是16張，目前有 {len(hand)} 張。計算進聴數需要固定的手牌數量。")
-        
-        # 複製手牌，避免修改原始手牌
-        remaining_tiles = hand.copy()
 
-        # 0. 先找出所有對子
-        pairs = self.find_pairs(remaining_tiles)
-        if len(pairs) != 0: # 如果手牌中有對子，則先處理對子
-            tmp_shanten_list = []
-            for pair in pairs:
-                # 複製手牌，避免修改原始手牌
-                tmp_remaining_tiles = remaining_tiles.copy()
-                # print(f"移除對子: {pair[0]}, {pair[1]}")
-                tmp_remaining_tiles.remove(pair[0])
-                tmp_remaining_tiles.remove(pair[1])
-                # print(f"移除對子後剩餘牌: {tmp_remaining_tiles}")
+        needed_melds = 5
+        grouped = self._group_tiles(hand)
+        # 每種花色/字牌轉成固定長度的張數陣列
+        counts = {}
+        for tile_type in ('wan', 'tong', 'suo'):
+            counts[tile_type] = [grouped[tile_type].get(n, 0) for n in range(1, 10)] if tile_type in grouped else [0] * 9
+        honors = [grouped['feng'].get(n, 0) for n in range(1, 5)] if 'feng' in grouped else [0] * 4
+        honors += [grouped['sanyuan'].get(n, 0) for n in range(1, 4)] if 'sanyuan' in grouped else [0] * 3
 
-                # 1. 找出最大面子數量
-                max_melds = self.calculate_max_melds(tmp_remaining_tiles)
-                
-                # 2. 將這些面子從手牌中移除
-                # 由於 calculate_max_melds 不會返回具體的面子，我們需要重新計算
-                grouped_tiles = self._group_tiles(tmp_remaining_tiles)
-                remaining_grouped = self._remove_max_melds(grouped_tiles)
-                
-                # 將分組後的牌轉換回列表
-                tiles_before_melds_removal = tmp_remaining_tiles.copy()
-                tmp_remaining_tiles = self._grouped_to_list(remaining_grouped)
-                # print(f"移除面子後剩餘牌: {tmp_remaining_tiles}")
-                # print(f"移除的面子: {[t for t in tiles_before_melds_removal if t not in tmp_remaining_tiles]}")
-                
-                # 3. 在剩餘的牌中找出最多的搭子組合
-                max_tatsu_list = self.find_max_tatsu(tmp_remaining_tiles)
-                
-                # 4. 將這些搭子從手牌中移除
-                tiles_before_tatsu_removal = tmp_remaining_tiles.copy()
-                for t1, t2, tatsu_type in max_tatsu_list:
-                    # print(f"移除搭子: {t1}, {t2} (類型: {tatsu_type})")
-                    if t1 in tmp_remaining_tiles:
-                        tmp_remaining_tiles.remove(t1)
-                    if t2 in tmp_remaining_tiles:
-                        tmp_remaining_tiles.remove(t2)
-                # print(f"移除搭子後剩餘牌: {tmp_remaining_tiles}")
-                
-                # 5. 剩下的是單張
-                singles = len(tmp_remaining_tiles)
-                
-                # 計算進聴數
-                has_pair = True
-                
-                # 搭子數量
-                tatsu_count = len(max_tatsu_list)
-                
-                # 需要的面子數
-                needed_melds = 4 - max_melds
+        def best_shanten(suit_counts, honor_counts, has_head):
+            options = {(0, 0)}
+            for c in suit_counts.values():
+                options = _merge_options(options, _suit_options(tuple(c)))
+            options = _merge_options(options, _honor_options(tuple(honor_counts)))
+            best = min(
+                2 * needed_melds - 2 * m - min(t, needed_melds - m)
+                for m, t in options
+            )
+            return best - (1 if has_head else 0)
 
-                # print("needed_melds: ", needed_melds)
-                # print("tatsu_count: ", tatsu_count)
-                # print("has_pair: ", has_pair)
-                # print("---------------------------------")
+        # 不選眼
+        shanten = best_shanten(counts, honors, False)
 
-                # 計算進聴數
-                if needed_melds == 0:
-                    # 已經有4個面子，一個對子，確認一下搭子數量
-                    if has_pair and tatsu_count == 1:
-                        shanten = 0
-                        tmp_shanten_list.append(shanten)
-                    else:
-                        shanten = 1
-                        tmp_shanten_list.append(shanten)
-                else:
-                    # 需要進的牌數
-                    if tatsu_count >= needed_melds:
-                        # 搭子數量足夠，每個搭子需要進一張牌
-                        tiles_needed = needed_melds
-                        tatsu_left_count = tatsu_count - needed_melds
-                    else:
-                        # 搭子數量不足，需要先形成搭子，再升級為面子
-                        tiles_needed = tatsu_count + (needed_melds - tatsu_count) * 2
-                        tatsu_left_count = 0
+        # 枚舉每一種對子當眼
+        for tile_type, arr in counts.items():
+            for i in range(9):
+                if arr[i] >= 2:
+                    arr[i] -= 2
+                    shanten = min(shanten, best_shanten(counts, honors, True))
+                    arr[i] += 2
+        for i in range(7):
+            if honors[i] >= 2:
+                honors[i] -= 2
+                shanten = min(shanten, best_shanten(counts, honors, True))
+                honors[i] += 2
 
-                    # 接著處理搭子及對子
-                    if tatsu_left_count == 1:
-                        needed_tatsu = 0
-                    else:
-                        needed_tatsu = 1
-                    
-                    # 進聴數
-                    shanten = tiles_needed + needed_tatsu
-                    tmp_shanten_list.append(shanten)
-            
-            # print("tmp_shanten_list: ", tmp_shanten_list)
-            shanten = min(tmp_shanten_list)
-
-        else: # 如果手牌中沒有對子，則先找出最大面子數量
-            # 1. 找出最大面子數量
-            max_melds = self.calculate_max_melds(remaining_tiles)
-            
-            # 2. 將這些面子從手牌中移除
-            # 由於 calculate_max_melds 不會返回具體的面子，我們需要重新計算
-            grouped_tiles = self._group_tiles(remaining_tiles)
-            remaining_grouped = self._remove_max_melds(grouped_tiles)
-            
-            # 將分組後的牌轉換回列表
-            tiles_before_melds_removal = remaining_tiles.copy()
-            remaining_tiles = self._grouped_to_list(remaining_grouped)
-            # print(f"沒有對子，直接移除面子後剩餘牌: {remaining_tiles}")
-            # print(f"移除的面子: {[t for t in tiles_before_melds_removal if t not in remaining_tiles]}")
-            
-            # 3. 在剩餘的牌中找出最多的搭子組合
-            max_tatsu_list = self.find_max_tatsu(remaining_tiles)
-            
-            # 4. 將這些搭子從手牌中移除
-            tiles_before_tatsu_removal = remaining_tiles.copy()
-            for t1, t2, tatsu_type in max_tatsu_list:
-                # print(f"移除搭子: {t1}, {t2} (類型: {tatsu_type})")
-                if t1 in remaining_tiles:
-                    remaining_tiles.remove(t1)
-                if t2 in remaining_tiles:
-                    remaining_tiles.remove(t2)
-            # print(f"移除搭子後剩餘牌: {remaining_tiles}")
-            
-            # 5. 剩下的是單張
-            singles = len(remaining_tiles)
-            
-            # 計算進聴數
-            # 檢查是否有對子
-            has_pair = False
-            
-            # 搭子數量
-            tatsu_count = len(max_tatsu_list)
-            
-            # 需要的面子數
-            needed_melds = 4 - max_melds
-
-            # 計算進聴數
-            if needed_melds == 0:
-                # 已經有4個面子，只需要一個對子
-                if has_pair and tatsu_count == 2:
-                    shanten = 0
-                else:
-                    shanten = 1
-            else:
-                # 需要進的牌數
-                if tatsu_count >= needed_melds:
-                    # 搭子數量足夠，每個搭子需要進一張牌
-                    tiles_needed = needed_melds
-                    tatsu_left_count = tatsu_count - needed_melds
-                else:
-                    # 搭子數量不足，需要先形成搭子，再升級為面子
-                    tiles_needed = tatsu_count + (needed_melds - tatsu_count) * 2
-                    tatsu_left_count = 0
-
-                # 接著處理搭子及對子
-                if tatsu_left_count == 2 and has_pair:
-                    needed_tatsu = 0
-                elif tatsu_left_count == 2 and not has_pair:
-                    needed_tatsu = 1
-                elif tatsu_left_count == 1:
-                    needed_tatsu = 1
-                else:
-                    needed_tatsu = 2
-                
-                # 進聴數
-                shanten = tiles_needed + needed_tatsu
-        
-        # 特殊情況：如果已經有5個面子，則為聽牌（0進聴）
-        if max_melds == 5:
-            shanten = 0
-        
         return shanten
     
-    def _remove_max_melds(self, grouped_tiles: Dict[str, Dict[int, int]]) -> Dict[str, Dict[int, int]]:
-        """從分組後的牌中移除最大數量的面子
-        
-        Args:
-            grouped_tiles: 分組後的牌，格式為 {"wan": {1: 2, 2: 1}, ...}
-            
-        Returns:
-            Dict[str, Dict[int, int]]: 移除面子後剩餘的牌
-        """
-        # 複製分組後的牌，避免修改原始數據
-        remaining = {}
-        for tile_type, numbers in grouped_tiles.items():
-            remaining[tile_type] = numbers.copy()
-        
-        # 嘗試兩種計算方式，取最大值
-        remaining1 = self._remove_melds(remaining.copy(), True)
-        remaining2 = self._remove_melds(remaining.copy(), False)
-        
-        # 計算兩種方式移除後剩餘的牌數
-        count1 = sum(sum(numbers.values()) for numbers in remaining1.values())
-        count2 = sum(sum(numbers.values()) for numbers in remaining2.values())
-        
-        # 返回剩餘牌數較少的結果（即移除面子數較多的結果）
-        return remaining1 if count1 <= count2 else remaining2
-    
-    def _remove_melds(self, grouped_tiles: Dict[str, Dict[int, int]], prioritize_triplets: bool = True) -> Dict[str, Dict[int, int]]:
-        """從分組後的牌中移除面子
-        
-        Args:
-            grouped_tiles: 分組後的牌，格式為 {"wan": {1: 2, 2: 1}, ...}
-            prioritize_triplets: 是否優先考慮刻子，如果為False則優先考慮順子
-            
-        Returns:
-            Dict[str, Dict[int, int]]: 移除面子後剩餘的牌
-        """
-        # 處理數字牌
-        for tile_type in ['wan', 'tong', 'suo']:
-            if tile_type not in grouped_tiles:
-                continue
-                
-            numbers = grouped_tiles[tile_type]
-            
-            # 根據優先級處理面子
-            if prioritize_triplets:
-                # 先找刻子
-                for num, count in list(numbers.items()):
-                    if count >= 3:
-                        numbers[num] -= 3
-                        if numbers[num] == 0:
-                            del numbers[num]
-                
-                # 再找順子
-                while True:
-                    found_straight = False
-                    for num in range(1, 8):
-                        if (numbers.get(num, 0) > 0 and 
-                            numbers.get(num + 1, 0) > 0 and 
-                            numbers.get(num + 2, 0) > 0):
-                            numbers[num] -= 1
-                            if numbers[num] == 0:
-                                del numbers[num]
-                            numbers[num + 1] -= 1
-                            if numbers[num + 1] == 0:
-                                del numbers[num + 1]
-                            numbers[num + 2] -= 1
-                            if numbers[num + 2] == 0:
-                                del numbers[num + 2]
-                            found_straight = True
-                            break  # 找到一個就中斷，再繼續找下一個
-                    if not found_straight:
-                        break
-            else:
-                # 先找順子
-                while True:
-                    found_straight = False
-                    for num in range(1, 8):
-                        if (numbers.get(num, 0) > 0 and 
-                            numbers.get(num + 1, 0) > 0 and 
-                            numbers.get(num + 2, 0) > 0):
-                            numbers[num] -= 1
-                            if numbers[num] == 0:
-                                del numbers[num]
-                            numbers[num + 1] -= 1
-                            if numbers[num + 1] == 0:
-                                del numbers[num + 1]
-                            numbers[num + 2] -= 1
-                            if numbers[num + 2] == 0:
-                                del numbers[num + 2]
-                            found_straight = True
-                            break  # 找到一個就中斷，再繼續找下一個
-                    if not found_straight:
-                        break
-                
-                # 再找刻子
-                for num, count in list(numbers.items()):
-                    if count >= 3:
-                        numbers[num] -= 3
-                        if numbers[num] == 0:
-                            del numbers[num]
-        
-        # 處理字牌（風牌和三元牌）
-        for tile_type in ['feng', 'sanyuan']:
-            if tile_type not in grouped_tiles:
-                continue
-                
-            numbers = grouped_tiles[tile_type]
-            
-            # 字牌只能形成刻子
-            for num, count in list(numbers.items()):
-                if count >= 3:
-                    numbers[num] -= 3
-                    if numbers[num] == 0:
-                        del numbers[num]
-        
-        return grouped_tiles
-    
-    def _grouped_to_list(self, grouped_tiles: Dict[str, Dict[int, int]]) -> List[str]:
-        """將分組後的牌轉換回列表
-        
-        Args:
-            grouped_tiles: 分組後的牌，格式為 {"wan": {1: 2, 2: 1}, ...}
-            
-        Returns:
-            List[str]: 牌列表，每個元素是牌字符串
-        """
-        tiles = []
-        for tile_type, numbers in grouped_tiles.items():
-            for num, count in numbers.items():
-                for _ in range(count):
-                    tiles.append(self._tile_to_string(tile_type, num))
-        return tiles
 
-    # ------------------------------------------------------------
-    # 等待牌計算相關
-    # ------------------------------------------------------------
+
+
     def _all_tile_labels(self) -> List[str]:
         """回傳34種牌的標籤列表"""
         tiles = []
@@ -1151,6 +877,71 @@ class ShantenCalculator:
             'best_options': best_options,  # 所有最佳選項
             'reason': reason
         }
+
+
+def _prune_options(options: Set[Tuple[int, int]]) -> Set[Tuple[int, int]]:
+    """只保留不被支配的 (面子數, 搭子數) 組合"""
+    return {
+        (m, t) for m, t in options
+        if not any((m2 >= m and t2 >= t and (m2, t2) != (m, t)) for m2, t2 in options)
+    }
+
+
+def _merge_options(a: Set[Tuple[int, int]], b: Set[Tuple[int, int]]) -> Set[Tuple[int, int]]:
+    """合併兩組拆法：面子數、搭子數各自相加"""
+    return _prune_options({(m1 + m2, t1 + t2) for m1, t1 in a for m2, t2 in b})
+
+
+@lru_cache(maxsize=None)
+def _suit_options(counts: Tuple[int, ...]) -> Set[Tuple[int, int]]:
+    """數字牌（1-9）所有可能拆法的 (面子數, 搭子數)，完整枚舉"""
+    i = next((k for k, c in enumerate(counts) if c > 0), None)
+    if i is None:
+        return {(0, 0)}
+    c = list(counts)
+    results = set()
+
+    def sub(removals, dm, dt):
+        for k in removals:
+            c[k] -= 1
+        for m, t in _suit_options(tuple(c)):
+            results.add((m + dm, t + dt))
+        for k in removals:
+            c[k] += 1
+
+    # 當孤張丟掉
+    sub([i], 0, 0)
+    # 刻子
+    if c[i] >= 3:
+        sub([i, i, i], 1, 0)
+    # 順子
+    if i + 2 < 9 and c[i + 1] > 0 and c[i + 2] > 0:
+        sub([i, i + 1, i + 2], 1, 0)
+    # 對子（當搭子）
+    if c[i] >= 2:
+        sub([i, i], 0, 1)
+    # 兩面/邊張搭子
+    if i + 1 < 9 and c[i + 1] > 0:
+        sub([i, i + 1], 0, 1)
+    # 嵌張搭子
+    if i + 2 < 9 and c[i + 2] > 0:
+        sub([i, i + 2], 0, 1)
+    return _prune_options(results)
+
+
+@lru_cache(maxsize=None)
+def _honor_options(counts: Tuple[int, ...]) -> Set[Tuple[int, int]]:
+    """字牌只能組刻子或對子"""
+    options = {(0, 0)}
+    for c in counts:
+        tile_opts = {(0, 0)}
+        if c >= 3:
+            tile_opts.add((1, 0))
+        if c >= 2:
+            tile_opts.add((0, 1))
+        options = _merge_options(options, tile_opts)
+    return options
+
 
 def calculate_max_melds(hand: List[str]) -> int:
     """計算手牌中最多可以形成的面子數量的便捷函式
