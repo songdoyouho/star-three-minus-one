@@ -396,6 +396,28 @@ def test_calculate_shanten_many_tatsu():
     shanten = calculator.calculate_shanten(hand)
     assert_equal(shanten, 3, "這手牌應該是三進聽")
 
+def test_calculate_shanten_after_melds():
+    """測試吃碰槓後（手牌變少）的進聽數"""
+    print("\n=== 測試吃碰槓後的進聽數 ===")
+    # 13 張：123m 456p 789s（面子）+ 55s（眼）+ 67m（搭子）→ 聽牌
+    hand_13 = ["1m", "2m", "3m", "4p", "5p", "6p", "7s", "8s", "9s",
+               "5s", "5s", "6m", "7m"]
+    assert_equal(calculate_shanten(hand_13), 0, "13張：3面子+眼+搭子應該聽牌")
+
+    # 10 張：123m 456p（面子）+ 78s（搭子）+ 東、西 → 6 - 4 - 1 = 1
+    hand_10 = ["1m", "2m", "3m", "4p", "5p", "6p", "7s", "8s", "east", "west"]
+    assert_equal(calculate_shanten(hand_10), 1, "10張：應該是一進聽")
+
+    # 1 張：單吊
+    assert_equal(calculate_shanten(["east"]), 0, "1張：單吊應該聽牌")
+
+    # 張數不合法
+    try:
+        calculate_shanten(["1m"] * 3 + ["2m"] * 3 + ["3m"] * 3 + ["4m"] * 3 + ["5m"] * 3)
+        assert_equal("沒有錯誤", "ValueError", "15張應該拋出 ValueError")
+    except ValueError:
+        assert_equal(True, True, "15張應該拋出 ValueError")
+
 def main():
     """執行所有測試"""
     print("=" * 60)
@@ -425,6 +447,7 @@ def main():
         test_calculate_shanten_user_hand,
         test_calculate_shanten_four_triplets_two_pairs,
         test_calculate_shanten_many_tatsu,
+        test_calculate_shanten_after_melds,
     ]
     
     passed = 0

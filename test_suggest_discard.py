@@ -186,6 +186,39 @@ def test_improving_tiles_comparison():
             improving_count = result['best_options'][0].get('improving_count', 0)
             print(f"\n✓ 測試通過：已計算進牌張數（{improving_count} 張）")
 
+def test_suggest_discard_after_melds():
+    """測試吃碰槓後（14張）的打牌建議與等待張數"""
+    print("\n=== 測試吃碰槓後的打牌建議 ===")
+    # 123m 456p 789s 55s 67m + 東：打東聽 5m、8m，各剩 4 張 → 等待 8 張
+    hand_14 = ["1m", "2m", "3m", "4p", "5p", "6p", "7s", "8s", "9s",
+               "5s", "5s", "6m", "7m", "east"]
+    result = suggest_discard(hand_14)
+    best = result['best_options'][0]
+    print(f"建議打掉: {result['tile']}，原因: {result['reason']}")
+    assert result['tile'] == 'east', f"應該打東，實際打 {result['tile']}"
+    assert result['shanten_after'] == 0, "打東後應該聽牌"
+    assert sorted(best['wait_tiles']) == ['5m', '8m'], f"應該聽 5m、8m，實際 {best['wait_tiles']}"
+    assert best['wait_count'] == 8, f"應該等待 8 張，實際 {best['wait_count']}"
+    print("✓ 測試通過：14張手牌正確建議打東，聽 5m、8m 共 8 張")
+
+def test_visible_tiles_reduce_count():
+    """測試場上已出現的牌會從剩餘張數扣掉"""
+    print("\n=== 測試扣除場上已出現的牌 ===")
+    hand_14 = ["1m", "2m", "3m", "4p", "5p", "6p", "7s", "8s", "9s",
+               "5s", "5s", "6m", "7m", "east"]
+    # 場上看到 3 張 5m、1 張 8m → 剩 1 + 3 = 4 張
+    result = suggest_discard(hand_14, visible_tiles=["5m", "5m", "5m", "8m"])
+    best = result['best_options'][0]
+    print(f"原因: {result['reason']}")
+    assert best['wait_count'] == 4, f"應該剩 4 張，實際 {best['wait_count']}"
+
+    # 5m 全部出現 → 只剩 8m 可胡，且不再列入等待牌
+    result = suggest_discard(hand_14, visible_tiles=["5m"] * 4)
+    best = result['best_options'][0]
+    assert best['wait_tiles'] == ['8m'], f"5m 已絕張，應只聽 8m，實際 {best['wait_tiles']}"
+    assert best['wait_count'] == 4, f"應該剩 4 張 8m，實際 {best['wait_count']}"
+    print("✓ 測試通過：剩餘張數正確扣除場上已出現的牌")
+
 def main():
     """執行所有測試"""
     print("=" * 60)
@@ -198,6 +231,8 @@ def main():
         test_suggest_discard_one_away()
         test_improving_tiles()
         test_improving_tiles_comparison()
+        test_suggest_discard_after_melds()
+        test_visible_tiles_reduce_count()
         
         print("\n" + "=" * 60)
         print("測試完成")

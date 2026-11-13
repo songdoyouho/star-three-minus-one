@@ -75,8 +75,8 @@ def test_calculate_shanten(hand: list):
     print("測試: calculate_shanten (計算進聽數)")
     print("="*60)
     
-    if len(hand) != 16:
-        print(f"❌ 錯誤: 手牌必須是16張，目前有 {len(hand)} 張")
+    if len(hand) % 3 != 1 or len(hand) > 16:
+        print(f"❌ 錯誤: 手牌必須是 16、13、10、7、4 或 1 張（吃碰槓後），目前有 {len(hand)} 張")
         return
     
     try:
@@ -100,9 +100,9 @@ def test_suggest_discard(hand: list):
     print("測試: suggest_discard (打牌建議)")
     print("="*60)
     
-    if len(hand) != 17:
-        print(f"❌ 錯誤: 打牌建議需要17張牌（16張手牌+1張摸到的牌），目前有 {len(hand)} 張")
-        print("提示: 請輸入17張牌，最後一張會被視為摸到的牌")
+    if len(hand) % 3 != 2 or len(hand) > 17:
+        print(f"❌ 錯誤: 打牌建議需要 17、14、11…張牌（手牌+1張摸到的牌），目前有 {len(hand)} 張")
+        print("提示: 請輸入17張牌（吃碰槓後為 14、11…張），最後一張會被視為摸到的牌")
         return
     
     try:

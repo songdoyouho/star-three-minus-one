@@ -573,21 +573,23 @@ class ShantenCalculator:
         進聽數 = 距離聽牌還需要換幾張牌（0 = 聽牌）。
 
         台灣麻將 16 張：胡牌需 5 個面子 + 1 個對子（眼）。
+        吃碰槓後，手上的牌每少 3 張，需要的面子就少 1 個
+        （13 張需 4 個面子、10 張需 3 個……）。
         做法：枚舉「選哪個對子當眼（或不選）」，再對每種花色完整枚舉
         面子/搭子的所有拆法，套用標準公式：
-            進聽數 = 2 × 5 - 2 × 面子數 - 搭子數 - (有眼 ? 1 : 0)
-        其中 面子數 + 搭子數 ≤ 5（多出來的搭子沒有用）。
+            進聽數 = 2 × N - 2 × 面子數 - 搭子數 - (有眼 ? 1 : 0)
+        其中 N = 需要的面子數，面子數 + 搭子數 ≤ N（多出來的搭子沒有用）。
 
         Args:
-            hand: 手牌列表，應該是16張牌，每個元素是牌字符串，例如 ["1m", "2m", "east"]
+            hand: 手上（未吃碰槓）的牌，16、13、10、7、4 或 1 張，例如 ["1m", "2m", "east"]
 
         Returns:
             int: 進聽數
         """
-        if len(hand) != 16:
-            raise ValueError(f"手牌必須是16張，目前有 {len(hand)} 張。計算進聴數需要固定的手牌數量。")
+        if len(hand) % 3 != 1 or len(hand) > 16:
+            raise ValueError(f"手牌張數必須是 16、13、10、7、4 或 1 張，目前有 {len(hand)} 張。")
 
-        needed_melds = 5
+        needed_melds = (len(hand) - 1) // 3
         grouped = self._group_tiles(hand)
         # 每種花色/字牌轉成固定長度的張數陣列
         counts = {}
@@ -637,8 +639,8 @@ class ShantenCalculator:
         return tiles
 
     def _can_form_complete_hand(self, hand: List[str]) -> bool:
-        """判斷17張牌是否已經和牌（5個面子 + 1對子）"""
-        if len(hand) != 17:
+        """判斷手牌（17、14、11…張）是否已經和牌（全部拆成面子 + 1對子）"""
+        if len(hand) % 3 != 2:
             return False
 
         grouped = self._group_tiles(hand)
@@ -716,32 +718,46 @@ class ShantenCalculator:
 
         return backtrack(counts)
 
-    def _count_waiting_tiles(self, hand_16: List[str]) -> Tuple[int, List[str]]:
-        """在進聽數為0的情況下，計算能胡的等待牌數量"""
+    def _remaining_counts(self, hand: List[str], visible_tiles: List[str]) -> Dict[str, int]:
+        """每種牌還剩幾張沒看到（4 - 自己手上 - 場上已看到）"""
+        remaining = {tile: self.total_tiles for tile in self._all_tile_labels()}
+        for tile in list(hand) + list(visible_tiles):
+            if tile in remaining:
+                remaining[tile] = max(0, remaining[tile] - 1)
+        return remaining
+
+    def _count_waiting_tiles(self, hand_16: List[str], remaining: Dict[str, int]) -> Tuple[int, List[str]]:
+        """在進聽數為0的情況下，計算能胡的牌（回傳剩餘總張數、牌種列表）"""
         waits = []
         for tile in self._all_tile_labels():
+            if remaining[tile] == 0:
+                continue
             candidate = hand_16 + [tile]
             if self._can_form_complete_hand(candidate):
                 waits.append(tile)
-        return len(waits), waits
+        return sum(remaining[t] for t in waits), waits
 
-    def _count_improving_tiles(self, hand_16: List[str], current_shanten: int) -> Tuple[int, List[str]]:
+    def _count_improving_tiles(self, hand_16: List[str], current_shanten: int,
+                               remaining: Dict[str, int]) -> Tuple[int, List[str]]:
         """計算能讓進聽數減少的進牌張數
-        
-        對於16張牌（進聽數為 current_shanten），計算加入哪些牌後，
+
+        對於手牌（進聽數為 current_shanten），計算加入哪些牌後，
         能讓進聽數進一步減少（變成 < current_shanten）。
-        
+
         Args:
-            hand_16: 16張牌的列表
-            current_shanten: 當前16張牌的進聽數
-            
+            hand_16: 手牌列表（16、13、10…張）
+            current_shanten: 當前手牌的進聽數
+            remaining: 每種牌還剩幾張沒看到
+
         Returns:
-            Tuple[int, List[str]]: (進牌數量, 進牌列表)
+            Tuple[int, List[str]]: (進牌剩餘總張數, 進牌牌種列表)
         """
         improving_tiles = []
-        
+
         # 嘗試加入每一種可能的牌
         for tile in self._all_tile_labels():
+            if remaining[tile] == 0:
+                continue
             # 加入這張牌後變成17張
             hand_17 = hand_16 + [tile]
             
@@ -761,18 +777,20 @@ class ShantenCalculator:
             # 如果加入這張牌後，最佳進聽數 < 當前進聽數，則這張牌是進牌
             if min_shanten_after is not None and min_shanten_after < current_shanten:
                 improving_tiles.append(tile)
-        
-        return len(improving_tiles), improving_tiles
 
-    def suggest_discard(self, hand_17: List[str]) -> Dict[str, Any]:
-        """建議17張牌中應該打哪一張
-        
-        這個方法會對每張牌進行評估，計算打掉該牌後剩餘16張牌的進聽數，
-        然後選擇進聽數最小的牌作為建議。
-        
+        return sum(remaining[t] for t in improving_tiles), improving_tiles
+
+    def suggest_discard(self, hand_17: List[str], visible_tiles: List[str] = None) -> Dict[str, Any]:
+        """建議手牌中應該打哪一張
+
+        這個方法會對每張牌進行評估，計算打掉該牌後剩餘手牌的進聽數，
+        然後選擇進聽數最小的牌作為建議；同進聽數時比較進牌/等待的剩餘張數。
+
         Args:
-            hand_17: 17張牌的列表（16張手牌 + 1張摸到的牌），每個元素是牌字符串
-            
+            hand_17: 手上的牌加上摸到的牌（17、14、11…張，吃碰槓的牌不算），每個元素是牌字符串
+            visible_tiles: 場上已經看得到的牌（河牌、各家吃碰槓、自己吃碰槓的牌），
+                用來扣掉進牌的剩餘張數；不給則視為都沒看到
+
         Returns:
             Dict[str, any]: 建議結果，包含：
                 - 'tile': 建議打掉的牌
@@ -783,9 +801,11 @@ class ShantenCalculator:
                 - 'best_options': 所有最佳選項列表（進聽數相同的牌）
                 - 'reason': 建議原因
         """
-        if len(hand_17) != 17:
-            raise ValueError(f"手牌必須是17張，目前有 {len(hand_17)} 張")
-        
+        if len(hand_17) % 3 != 2 or len(hand_17) > 17:
+            raise ValueError(f"手牌張數必須是 17、14、11、8、5 或 2 張，目前有 {len(hand_17)} 張")
+
+        remaining = self._remaining_counts(hand_17, visible_tiles or [])
+
         # 儲存所有可能的打牌選項
         options = []
         
@@ -822,7 +842,7 @@ class ShantenCalculator:
             enriched = []
             for opt in best_options:
                 hand_16 = hand_17[:opt['index']] + hand_17[opt['index'] + 1:]
-                wait_count, wait_tiles = self._count_waiting_tiles(hand_16)
+                wait_count, wait_tiles = self._count_waiting_tiles(hand_16, remaining)
                 opt = opt.copy()
                 opt['wait_count'] = wait_count
                 opt['wait_tiles'] = wait_tiles
@@ -836,7 +856,7 @@ class ShantenCalculator:
             enriched = []
             for opt in best_options:
                 hand_16 = hand_17[:opt['index']] + hand_17[opt['index'] + 1:]
-                improving_count, improving_tiles = self._count_improving_tiles(hand_16, best_shanten)
+                improving_count, improving_tiles = self._count_improving_tiles(hand_16, best_shanten, remaining)
                 opt = opt.copy()
                 opt['wait_count'] = 0  # 未聽牌時沒有等待牌
                 opt['wait_tiles'] = []
@@ -1007,20 +1027,21 @@ def calculate_shanten(hand: List[str]) -> int:
     """計算手牌的進聴數的便捷函式
     
     Args:
-        hand: 16張手牌，每個元素是牌字符串，例如 ["1m", "2m", "east", ...]
-        
+        hand: 手上的牌（16、13、10…張），每個元素是牌字符串，例如 ["1m", "2m", "east", ...]
+
     Returns:
         int: 進聴數
     """
     calculator = ShantenCalculator()
     return calculator.calculate_shanten(hand)
 
-def suggest_discard(hand_17: List[str]) -> Dict[str, Any]:
-    """建議17張牌中應該打哪一張的便捷函式
-    
+def suggest_discard(hand_17: List[str], visible_tiles: List[str] = None) -> Dict[str, Any]:
+    """建議手牌中應該打哪一張的便捷函式
+
     Args:
-        hand_17: 17張牌的列表（16張手牌 + 1張摸到的牌），每個元素是牌字符串
-        
+        hand_17: 手上的牌加上摸到的牌（17、14、11…張），每個元素是牌字符串
+        visible_tiles: 場上已經看得到的牌，用來扣掉進牌剩餘張數
+
     Returns:
         Dict[str, any]: 建議結果，包含：
             - 'tile': 建議打掉的牌
@@ -1030,7 +1051,7 @@ def suggest_discard(hand_17: List[str]) -> Dict[str, Any]:
             - 'reason': 建議原因
     """
     calculator = ShantenCalculator()
-    return calculator.suggest_discard(hand_17)
+    return calculator.suggest_discard(hand_17, visible_tiles)
 
 def visualize_hand(hand: List[str], use_chinese: bool = True) -> str:
     """視覺化手牌的便捷函式
