@@ -2,185 +2,56 @@ import cv2
 import time
 import os
 import sys
-import numpy as np
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from window_capture import WindowCapture
-from calculate_shanten import suggest_discard
+from calculate_shanten import suggest_discard, calculate_shanten
+from hand_recognizer import HandRecognizer
 
-def load_all_templates(samples_dir='samples'):
-    """載入所有麻將牌模板"""
-    templates = {}
-    
-    # 載入萬子 (1m-9m)
-    for i in range(1, 10):
-        filename = f"{i}m.png"
-        filepath = os.path.join(samples_dir, filename)
-        if os.path.exists(filepath):
-            template = cv2.imread(filepath, cv2.IMREAD_COLOR)
-            if template is not None:
-                templates[f"{i}m"] = template
-                print(f"  載入: {i}m ({template.shape[1]}x{template.shape[0]})")
-    
-    # 載入筒子 (1p-9p)
-    for i in range(1, 10):
-        filename = f"{i}p.png"
-        filepath = os.path.join(samples_dir, filename)
-        if os.path.exists(filepath):
-            template = cv2.imread(filepath, cv2.IMREAD_COLOR)
-            if template is not None:
-                templates[f"{i}p"] = template
-                print(f"  載入: {i}p ({template.shape[1]}x{template.shape[0]})")
-    
-    # 載入條子 (1s-9s)
-    for i in range(1, 10):
-        filename = f"{i}s.png"
-        filepath = os.path.join(samples_dir, filename)
-        if os.path.exists(filepath):
-            template = cv2.imread(filepath, cv2.IMREAD_COLOR)
-            if template is not None:
-                templates[f"{i}s"] = template
-                print(f"  載入: {i}s ({template.shape[1]}x{template.shape[0]})")
-    
-    # 載入字牌
-    word_tiles = ['east', 'south', 'west', 'north', 'middle', 'fa', 'white']
-    for tile_name in word_tiles:
-        filename = f"{tile_name}.png"
-        filepath = os.path.join(samples_dir, filename)
-        if os.path.exists(filepath):
-            template = cv2.imread(filepath, cv2.IMREAD_COLOR)
-            if template is not None:
-                templates[tile_name] = template
-                print(f"  載入: {tile_name} ({template.shape[1]}x{template.shape[0]})")
-    
-    return templates
+def analyze_frame(frame, recognizer, cache):
+    """辨識手牌並計算建議；手牌沒變就沿用上次的計算結果
 
-def _match_single_template(args):
+    Returns:
+        (detections, info_lines)
     """
-    單個模板匹配的輔助函數（用於多線程）
-    :param args: (label, template, small_image, scale_factor, threshold, orig_w, orig_h)
-    :return: 檢測結果列表
-    """
-    label, template, small_image, scale_factor, threshold, orig_w, orig_h = args
-    detections = []
-    
-    # 縮放模板以匹配縮小的圖片
-    if scale_factor < 1.0:
-        small_template = cv2.resize(template, (0, 0), fx=scale_factor, fy=scale_factor)
-    else:
-        small_template = template
-    
-    # 檢查模板是否大於圖片
-    if small_template.shape[1] > small_image.shape[1] or small_template.shape[0] > small_image.shape[0]:
-        return detections
-    
-    # 模板匹配
-    result = cv2.matchTemplate(small_image, small_template, cv2.TM_CCOEFF_NORMED)
-    
-    # 使用更高效的方法找多個匹配點
-    max_matches_per_template = 20  # 每種牌最多找 20 個匹配點
-    
-    # 先找所有超過閾值的位置
-    locations = np.where(result >= threshold)
-    
-    # 如果匹配點太多，只取前 N 個最佳匹配
-    if len(locations[0]) > 0:
-        # 取得所有匹配點的信心度
-        confidences = result[locations]
-        # 排序並取前 N 個
-        top_indices = np.argsort(confidences)[-max_matches_per_template:][::-1]
-        
-        for idx in top_indices:
-            pt_y, pt_x = locations[0][idx], locations[1][idx]
-            confidence = confidences[idx]
-            
-            # 將座標轉換回原始圖片大小
-            x = int(pt_x / scale_factor)
-            y = int(pt_y / scale_factor)
-            
-            detections.append({
-                'x': x,
-                'y': y,
-                'w': orig_w,
-                'h': orig_h,
-                'label': label,
-                'confidence': float(confidence)
-            })
-    
-    return detections
+    res = recognizer.recognize(frame)
+    hand, drawn = res['hand'], res['drawn']
+    lines = []
+    if not hand:
+        cache.clear()
+        return res['detections'], lines
 
-def match_templates(image, templates, threshold=0.7, scale_factor=0.5, max_workers=None):
-    """
-    在圖片中進行模板匹配（多線程優化版本）
-    :param image: 輸入圖片
-    :param templates: 模板字典 {label: template_image}
-    :param threshold: 匹配閾值
-    :param scale_factor: 縮放因子（降低解析度以加速，0.5 表示縮小到一半）
-    :param max_workers: 最大線程數（None 表示自動選擇）
-    :return: 檢測結果列表 [(x, y, w, h, label, confidence), ...]
-    """
-    all_detections = []
-    
-    # 降低圖片解析度以加速匹配
-    if scale_factor < 1.0:
-        small_image = cv2.resize(image, (0, 0), fx=scale_factor, fy=scale_factor)
-    else:
-        small_image = image
-        scale_factor = 1.0
-    
-    # 準備所有模板的參數
-    template_args = []
-    for label, template in templates.items():
-        h, w = template.shape[:2]
-        template_args.append((label, template, small_image, scale_factor, threshold, w, h))
-    
-    # 使用多線程並行處理所有模板
-    if max_workers is None:
-        # 自動選擇線程數（通常為 CPU 核心數）
-        max_workers = 12
-    
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # 提交所有任務
-        futures = [executor.submit(_match_single_template, args) for args in template_args]
-        
-        # 收集結果
-        for future in as_completed(futures):
-            try:
-                detections = future.result()
-                all_detections.extend(detections)
-            except Exception as e:
-                print(f"模板匹配錯誤: {e}")
-    
-    # 簡單的 NMS：移除重疊的檢測結果
-    if len(all_detections) > 0:
-        # 按信心度排序
-        all_detections = sorted(all_detections, key=lambda x: x['confidence'], reverse=True)
-        
-        filtered = []
-        for det in all_detections:
-            overlap = False
-            for selected in filtered:
-                # 計算重疊區域
-                x1 = max(det['x'], selected['x'])
-                y1 = max(det['y'], selected['y'])
-                x2 = min(det['x'] + det['w'], selected['x'] + selected['w'])
-                y2 = min(det['y'] + det['h'], selected['y'] + selected['h'])
-                
-                if x2 > x1 and y2 > y1:
-                    intersection = (x2 - x1) * (y2 - y1)
-                    area1 = det['w'] * det['h']
-                    area2 = selected['w'] * selected['h']
-                    iou = intersection / (area1 + area2 - intersection)
-                    
-                    if iou > 0.5:  # 重疊閾值
-                        overlap = True
-                        break
-            
-            if not overlap:
-                filtered.append(det)
-        
-        all_detections = filtered
-    
-    return all_detections
+    # 手牌完整（沒有認不出來的牌、張數正確）才重新計算
+    full = hand + ([drawn] if drawn else [])
+    if res['unknown'] == 0 and len(hand) % 3 == 1 and tuple(full) != cache.get('key'):
+        cache['key'] = tuple(full)
+        cache['tile'] = None
+        try:
+            if drawn:
+                s = suggest_discard(full)
+                best = s['best_options'][0]
+                if s['shanten_after'] == 0:
+                    detail = f"Waits: {' '.join(best['wait_tiles'])} ({best['wait_count']} left)"
+                else:
+                    detail = f"Improving: {best['improving_count']} tiles"
+                cache['text'] = f"Discard: {s['tile']} | Shanten after: {s['shanten_after']} | {detail}"
+                cache['tile'] = s['tile']
+                print(f"手牌 {' '.join(full)} → 建議打 {s['tile']}：{s['reason']}")
+            else:
+                cache['text'] = f"Shanten: {calculate_shanten(hand)}"
+        except Exception as e:
+            cache['text'] = None
+            print(f"建議計算失敗: {e}")
+
+    # 建議放第一行，並在畫面上標出要打的那張牌
+    if cache.get('text'):
+        lines.append(cache['text'])
+    if cache.get('tile'):
+        target = next((d for d in res['detections'] if d['label'] == cache['tile']), None)
+        if target:
+            target['suggested'] = True
+    lines.append(f"Hand ({len(hand)}): {' '.join(hand)}" + (f" | Drawn: {drawn}" if drawn else ""))
+    if res['unknown']:
+        lines.append(f"Unrecognized: {res['unknown']} tile(s) (covered or dimmed)")
+    return res['detections'], lines
 
 def draw_detections(image, detections):
     """在圖片上繪製檢測結果"""
@@ -207,8 +78,26 @@ def draw_detections(image, detections):
         # 標籤文字
         cv2.putText(result_img, text, (x, y - 5),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
-    
+
+        # 建議打的牌：紅色粗框
+        if det.get('suggested'):
+            cv2.rectangle(result_img, (x - 4, y - 4), (x + w + 4, y + h + 4), (0, 0, 255), 10)
+            cv2.putText(result_img, "DISCARD", (x - 10, y - 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 255), 4)
+
     return result_img
+
+def draw_info_panel(image, lines):
+    """在畫面左上角（標題列下方）畫黑底大字的資訊面板，第一行用黃色強調"""
+    if not lines:
+        return
+    font, scale, thickness, line_h = cv2.FONT_HERSHEY_SIMPLEX, 1.3, 3, 50
+    width = max(cv2.getTextSize(l, font, scale, thickness)[0][0] for l in lines) + 40
+    top = 40
+    cv2.rectangle(image, (0, top), (width, top + line_h * len(lines) + 20), (0, 0, 0), -1)
+    for i, line in enumerate(lines):
+        color = (0, 255, 255) if i == 0 else (255, 255, 255)
+        cv2.putText(image, line, (20, top + 45 + i * line_h), font, scale, color, thickness)
 
 def main():
     # 檢查是否有提供影片路徑
@@ -227,13 +116,10 @@ def main():
         # 影片模式
         print(f"使用影片模式: {video_path}")
         
-        # 載入所有麻將牌模板
-        print("\n正在載入麻將牌模板...")
-        templates = load_all_templates()
-        if len(templates) == 0:
-            print("警告: 找不到模板，將不進行檢測")
-        else:
-            print(f"共載入 {len(templates)} 個模板\n")
+        # 載入手牌樣板
+        recognizer = HandRecognizer()
+        print(f"\n共載入 {len(recognizer.templates)} 個樣板\n")
+        cache = {}
         
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -283,42 +169,10 @@ def main():
                 print("錯誤: 沒有可顯示的畫面")
                 break
             
-            # 進行模板匹配（如果啟用）
-            detections = []
-            hand_tiles = []  # 手牌
-            drawn_tile = None  # 摸到的牌
-            
-            suggestion = None
-            if enable_detection and len(templates) > 0:
-                try:
-                    # 使用模板匹配
-                    detections = match_templates(current_frame, templates, threshold=0.8, scale_factor=0.2)
-                    
-                    # 根據檢測結果區分手牌和摸到的牌
-                    # 按照x座標排序（從左到右）
-                    sorted_detections = sorted(detections, key=lambda d: d['x'])
-                    
-                    if len(detections) == 16:
-                        # 16張牌，全部都是手牌
-                        hand_tiles = [det['label'] for det in sorted_detections]
-                        drawn_tile = None
-                    elif len(detections) == 17:
-                        # 17張牌，最右邊的是摸到的牌，其他16張是手牌
-                        hand_tiles = [det['label'] for det in sorted_detections[:16]]
-                        drawn_tile = sorted_detections[16]['label']
-                        # 嘗試給出打牌建議
-                        try:
-                            full_hand = [det['label'] for det in sorted_detections]
-                            suggestion = suggest_discard(full_hand)
-                        except Exception as e:
-                            print(f"建議計算失敗: {e}")
-                    elif len(detections) > 0:
-                        # 其他情況，全部當作手牌處理
-                        hand_tiles = [det['label'] for det in sorted_detections]
-                        drawn_tile = None
-                except Exception as e:
-                    print(f"檢測錯誤: {e}")
-                    detections = []
+            # 辨識手牌並計算建議（如果啟用）
+            detections, analysis_lines = [], []
+            if enable_detection:
+                detections, analysis_lines = analyze_frame(current_frame, recognizer, cache)
             
             # 繪製檢測結果
             display_img = draw_detections(current_frame, detections)
@@ -333,21 +187,9 @@ def main():
                 actual_fps = 1.0 / (time.time() - loop_time) if (time.time() - loop_time) > 0 else 0
                 info_lines[0] += f" | FPS: {actual_fps:.2f}"
             
-            if len(hand_tiles) > 0:
-                info_lines.append(f"Hand ({len(hand_tiles)} tiles): {', '.join(hand_tiles)}")
-            
-            if drawn_tile:
-                info_lines.append(f"Drawn tile: {drawn_tile}")
+            # 建議放最上面，狀態列放最後
+            draw_info_panel(display_img, analysis_lines + info_lines)
 
-            if suggestion:
-                info_lines.append(f"Suggest discard: {suggestion['tile']} | Shanten: {suggestion['shanten_after']}")
-            
-            # 在圖片上顯示資訊
-            y_offset = 30
-            for i, line in enumerate(info_lines):
-                cv2.putText(display_img, line, (10, y_offset + i * 25),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            
             # 縮小顯示
             display_img = cv2.resize(display_img, (0, 0), fx=0.6, fy=0.6)
             cv2.imshow('Video Preview', display_img)
@@ -381,13 +223,10 @@ def main():
             print("請確認遊戲已開啟，或使用影片模式: python main_preview.py <影片路徑>")
             return
 
-        # 載入所有麻將牌模板
-        print("\n正在載入麻將牌模板...")
-        templates = load_all_templates()
-        if len(templates) == 0:
-            print("警告: 找不到模板，將不進行檢測")
-        else:
-            print(f"共載入 {len(templates)} 個模板\n")
+        # 載入手牌樣板
+        recognizer = HandRecognizer()
+        print(f"\n共載入 {len(recognizer.templates)} 個樣板\n")
+        cache = {}
         
         print("操作說明:")
         print("  Q 鍵: 退出")
@@ -400,73 +239,24 @@ def main():
             # 1. 獲取截圖
             screenshot = wincap.get_screenshot()
 
-            # 2. 進行模板匹配（如果啟用）
-            detections = []
-            hand_tiles = []  # 手牌
-            drawn_tile = None  # 摸到的牌
-            
-            suggestion = None
-            if enable_detection and len(templates) > 0:
-                try:
-                    # 使用模板匹配
-                    detections = match_templates(screenshot, templates, threshold=0.8, scale_factor=0.2)
-                    
-                    # 根據檢測結果區分手牌和摸到的牌
-                    # 按照x座標排序（從左到右）
-                    sorted_detections = sorted(detections, key=lambda d: d['x'])
-                    
-                    if len(detections) == 16:
-                        # 16張牌，全部都是手牌
-                        hand_tiles = [det['label'] for det in sorted_detections]
-                        drawn_tile = None
-                    elif len(detections) == 17:
-                        # 17張牌，最右邊的是摸到的牌，其他16張是手牌
-                        hand_tiles = [det['label'] for det in sorted_detections[:16]]
-                        drawn_tile = sorted_detections[16]['label']
-                        # 嘗試給出打牌建議
-                        try:
-                            full_hand = [det['label'] for det in sorted_detections]
-                            suggestion = suggest_discard(full_hand)
-                        except Exception as e:
-                            print(f"建議計算失敗: {e}")
-                    elif len(detections) > 0:
-                        # 其他情況，全部當作手牌處理
-                        hand_tiles = [det['label'] for det in sorted_detections]
-                        drawn_tile = None
-                except Exception as e:
-                    print(f"檢測錯誤: {e}")
-                    detections = []
+            # 辨識手牌並計算建議（如果啟用）
+            detections, analysis_lines = [], []
+            if enable_detection:
+                detections, analysis_lines = analyze_frame(screenshot, recognizer, cache)
             
             # 3. 繪製檢測結果
             display_img = draw_detections(screenshot, detections)
             
             # 4. 顯示資訊
             detection_status = "ON" if enable_detection else "OFF"
-            info_lines = [
-                f"Detection: {detection_status} | Found {len(detections)} tiles",
-            ]
-            
-            if len(hand_tiles) > 0:
-                info_lines.append(f"Hand ({len(hand_tiles)} tiles): {', '.join(hand_tiles)}")
-            
-            if drawn_tile:
-                info_lines.append(f"Drawn tile: {drawn_tile}")
-
-            if suggestion:
-                info_lines.append(f"Suggest discard: {suggestion['tile']} | Shanten: {suggestion['shanten_after']}")
-            
-            # 在圖片上顯示資訊
-            y_offset = 30
-            for i, line in enumerate(info_lines):
-                cv2.putText(display_img, line, (10, y_offset + i * 25),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            
-            # 計算並顯示 FPS
             actual_fps = 1.0 / (time.time() - loop_time) if (time.time() - loop_time) > 0 else 0
-            fps_text = f"FPS: {actual_fps:.2f}"
-            cv2.putText(display_img, fps_text, (10, y_offset + len(info_lines) * 25),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            
+            info_lines = [
+                f"Detection: {detection_status} | Found {len(detections)} tiles | FPS: {actual_fps:.2f}",
+            ]
+
+            # 建議放最上面，狀態列放最後
+            draw_info_panel(display_img, analysis_lines + info_lines)
+
             # 縮小一點顯示，避免擋住整個螢幕
             display_img = cv2.resize(display_img, (0, 0), fx=0.5, fy=0.5)
             cv2.imshow('Computer Vision', display_img)
