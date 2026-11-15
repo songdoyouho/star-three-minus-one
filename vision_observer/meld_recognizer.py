@@ -9,8 +9,8 @@
 import cv2
 import numpy as np
 
-from hand_recognizer import REF_W, REF_H
-from table_recognizer import white_mask, HandTemplateMatcher, PATCH
+from vision_observer.hand_recognizer import REF_W, REF_H
+from vision_observer.table_recognizer import white_mask, HandTemplateMatcher, PATCH
 
 FACE_TOP, FACE_BOTTOM = 1048, 1146   # 牌面上緣、下緣
 FIRST_X = 94                         # 第一格牌面下緣的左端

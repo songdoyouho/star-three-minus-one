@@ -1,4 +1,4 @@
-from calculate_shanten import ShantenCalculator, calculate_max_melds, find_tatsu, count_tatsu, find_max_tatsu, calculate_shanten
+from mahjong_engine.shanten import ShantenCalculator, calculate_max_melds, find_tatsu, count_tatsu, find_max_tatsu, calculate_shanten
 
 def assert_equal(actual, expected, message=""):
     """簡單的斷言函數"""

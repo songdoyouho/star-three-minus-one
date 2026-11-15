@@ -14,7 +14,7 @@ import os
 import cv2
 import numpy as np
 
-from hand_recognizer import REF_W, REF_H, FLOWERS, _imread
+from vision_observer.hand_recognizer import REF_W, REF_H, FLOWERS, _imread
 
 PATCH = 40                 # 圖案縮放後的大小
 TABLE_TOP = 440            # 掃描範圍（上緣以上是頭像、跑馬燈）

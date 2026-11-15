@@ -3,7 +3,7 @@
 測試打牌建議功能
 """
 
-from calculate_shanten import suggest_discard, calculate_shanten, safest_discards
+from mahjong_engine.shanten import suggest_discard, calculate_shanten, safest_discards
 
 def test_suggest_discard_basic():
     """基本測試：測試打牌建議功能"""

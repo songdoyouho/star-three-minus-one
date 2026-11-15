@@ -10,7 +10,7 @@ from datetime import datetime
 
 import cv2
 
-from window_capture import WindowCapture
+from vision_observer.window_capture import WindowCapture
 
 OUTPUT_DIR = 'screenshots'
 

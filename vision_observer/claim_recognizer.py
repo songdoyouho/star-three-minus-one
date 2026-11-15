@@ -9,8 +9,8 @@ import os
 import cv2
 import numpy as np
 
-from hand_recognizer import REF_W, REF_H, _imread
-from table_recognizer import white_mask, ink_patch, HandTemplateMatcher
+from vision_observer.hand_recognizer import REF_W, REF_H, _imread
+from vision_observer.table_recognizer import white_mask, ink_patch, HandTemplateMatcher
 
 BUTTONS = {'chi': (705, 863), 'pon': (935, 863), 'kan': (1165, 863), 'ting': (1392, 863), 'hu': (1618, 863)}
 CANCEL = (1880, 875)

@@ -4,7 +4,7 @@
 可以輸入手牌並測試各種功能
 """
 
-from calculate_shanten import (
+from mahjong_engine.shanten import (
     calculate_shanten, 
     suggest_discard,
     calculate_max_melds,

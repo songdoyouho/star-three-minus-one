@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """測試吃碰槓胡的建議"""
-from calculate_shanten import suggest_claim, suggest_self_kan, is_winning
-from hand_recognizer import HandRecognizer
-from main_preview import analyze_frame
+from mahjong_engine.shanten import suggest_claim, suggest_self_kan, is_winning
+from vision_observer.hand_recognizer import HandRecognizer
+from advisor import analyze_frame
 from test_hand_recognizer import make_frame
 
 MELDS_9 = ["1m", "2m", "3m", "4p", "5p", "6p", "7s", "8s", "9s"]

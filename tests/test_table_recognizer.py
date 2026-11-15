@@ -9,9 +9,9 @@ from collections import Counter
 import cv2
 import numpy as np
 
-import table_recognizer as tr
-from hand_recognizer import HandRecognizer
-from main_preview import analyze_frame
+from vision_observer import table_recognizer as tr
+from vision_observer.hand_recognizer import HandRecognizer
+from advisor import analyze_frame
 from test_hand_recognizer import make_frame, check
 
 RIVER_W, RIVER_H = 75, 58  # 牌河的牌：比手牌小、被壓扁（斜看桌面）

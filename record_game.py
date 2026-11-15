@@ -2,7 +2,7 @@ import cv2
 import time
 import os
 from datetime import datetime
-from window_capture import WindowCapture
+from vision_observer.window_capture import WindowCapture
 
 def main():
     try:

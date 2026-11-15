@@ -5,8 +5,8 @@ import os
 import cv2
 import numpy as np
 
-import hand_recognizer as hr
-from main_preview import analyze_frame
+from vision_observer import hand_recognizer as hr
+from advisor import analyze_frame
 
 
 def load_color_template(label):
