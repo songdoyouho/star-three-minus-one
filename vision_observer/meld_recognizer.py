@@ -2,15 +2,18 @@
 
 這些牌從最左邊開始一張接一張排（手牌往右移），每一格的位置和傾斜角度固定：
 牌面是上緣往右偏的四邊形，越左邊偏越多。把每一格拉正成長方形後，
-取牌面內非白色的部分當圖案，跟手牌樣板比對。
+取牌面內非白色的部分當圖案，先比 samples_meld/ 裡從實際吃碰區截下來的樣板，
+不夠像再跟手牌樣板比對（碰出去的 1 筒外圈較淡，跟手牌樣板比不像）。
 每組吃碰槓都佔 3 格；槓是在中間那格上面再疊一張（暗槓時下面 3 張是蓋著的牌背）。
 位置參數用已知答案的截圖找出來（39 張全對，最低分 0.5）。座標以 2566x1386 的視窗截圖為準。
 """
+import os
+
 import cv2
 import numpy as np
 
-from vision_observer.hand_recognizer import REF_W, REF_H
-from vision_observer.table_recognizer import white_mask, HandTemplateMatcher, PATCH
+from vision_observer.hand_recognizer import REF_W, REF_H, _imread
+from vision_observer.table_recognizer import white_mask, HandTemplateMatcher, PATCH, _features
 
 FACE_TOP, FACE_BOTTOM = 1048, 1146   # 牌面上緣、下緣
 FIRST_X = 94                         # 第一格牌面下緣的左端
@@ -25,6 +28,8 @@ STACK_DX, STACK_DY = -3, 58          # 槓的第 4 張疊在中間那格上面�
 STACK_ACCEPT = 0.5                   # 疊在上面的牌要夠像才算槓（白板線條細，分數較低，約 0.58）
 CONCEALED_ACCEPT = 0.2               # 暗槓上面那張一定是牌，只要排得出最像的就好
 BACK_RATIO = 0.5                    # 藍綠色超過這個比例就是蓋著的牌背
+MELD_ACCEPT = 0.8                    # 跟 samples_meld/ 的樣板這麼像就直接採用
+HAND_GAP = 6                         # 手牌左緣往左這麼多以右不看（最後一格右邊會帶到手牌的邊）
 
 
 def slot_quad(i):
@@ -42,11 +47,15 @@ def _is_back(face):
 
 
 class MeldRecognizer:
-    def __init__(self, samples_dir='samples'):
+    def __init__(self, samples_dir='samples', meld_dir='samples_meld'):
         self.matcher = HandTemplateMatcher(samples_dir)
+        names = sorted(n for n in os.listdir(meld_dir) if n.endswith('.png'))
+        self.meld_labels = [n.rsplit('_', 1)[0] for n in names]
+        self.meld_feats = _features([_imread(os.path.join(meld_dir, n), cv2.IMREAD_COLOR) for n in names])
         self._dst = np.float32([[0, 0], [FACE_W, 0], [FACE_W, FACE_H], [0, FACE_H]])
 
-    def _classify(self, face, accept=ACCEPT):
+    def _patch(self, face):
+        """拉正後的牌面 → 圖案縮放後的小圖，沒有圖案時回傳 None"""
         ink = 1 - white_mask(face)
         ink[:MARGIN_TOP] = 0
         ink[FACE_H - MARGIN_BOTTOM:] = 0
@@ -55,9 +64,18 @@ class MeldRecognizer:
         ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
         ys, xs = np.nonzero(ink)
         if len(xs) < 15:
+            return None
+        return cv2.resize(face[ys.min():ys.max() + 1, xs.min():xs.max() + 1], (PATCH, PATCH),
+                          interpolation=cv2.INTER_AREA)
+
+    def _classify(self, face, accept=ACCEPT):
+        patch = self._patch(face)
+        if patch is None:
             return None, 0.0
-        patch = cv2.resize(face[ys.min():ys.max() + 1, xs.min():xs.max() + 1], (PATCH, PATCH),
-                           interpolation=cv2.INTER_AREA)
+        scores = self.meld_feats @ _features([patch])[0]
+        k = int(np.argmax(scores))
+        if scores[k] >= MELD_ACCEPT:
+            return self.meld_labels[k], float(scores[k])
         label, score = self.matcher.match(patch)
         return (label if score >= accept else None), score
 
@@ -76,6 +94,7 @@ class MeldRecognizer:
             scale = frame.shape[1] / REF_W
             frame = cv2.resize(frame, (REF_W, REF_H))
         hand_x = hand_x / scale
+        frame = frame[:, :int(hand_x) - HAND_GAP]  # 右邊是手牌，拉正時超出的部分補白色
 
         melds, detections = [], []
         for g in range(MAX_SLOTS // 3):
@@ -102,7 +121,8 @@ class MeldRecognizer:
         return {'tiles': tiles, 'melds': melds, 'detections': detections, 'area': area}
 
     def _warp(self, frame, quad):
-        return cv2.warpPerspective(frame, cv2.getPerspectiveTransform(quad, self._dst), (FACE_W, FACE_H))
+        return cv2.warpPerspective(frame, cv2.getPerspectiveTransform(quad, self._dst), (FACE_W, FACE_H),
+                                   borderMode=cv2.BORDER_CONSTANT, borderValue=(255, 255, 255))
 
     @staticmethod
     def _detection(quad, label, score, scale):

@@ -9,8 +9,8 @@ import os
 import cv2
 import numpy as np
 
-from vision_observer.hand_recognizer import REF_W, REF_H, _imread
-from vision_observer.table_recognizer import white_mask, ink_patch, HandTemplateMatcher
+from vision_observer.hand_recognizer import REF_W, REF_H, TILE_W, TILE_H, _imread
+from vision_observer.table_recognizer import white_mask, ink_patch, hand_ink_patch, HandTemplateMatcher
 
 BUTTONS = {'chi': (705, 863), 'pon': (935, 863), 'kan': (1165, 863), 'ting': (1392, 863), 'hu': (1618, 863)}
 CANCEL = (1880, 875)
@@ -19,6 +19,8 @@ RING = (60, 72)            # 取按鈕外圈這一圈的像素判斷亮不亮（
 LIT_RATIO = 0.5            # 外圈有一半以上是白色就算亮
 TILE_AREA = (300, 1000)    # 放大的牌出現的高度範圍
 TILE_ACCEPT = 0.6
+MERGE_DX, MERGE_DY = 6, 10  # 左右邊界差這麼多以內、上下間隔這麼多以內的白色區塊算同一張牌
+HULL_FILL = 0.85           # 白色區塊的凸包至少要佔外框這個比例
 
 _yy, _xx = np.mgrid[-RING[1]:RING[1] + 1, -RING[1]:RING[1] + 1]
 _RING_MASK = (np.hypot(_yy, _xx) >= RING[0]) & (np.hypot(_yy, _xx) <= RING[1])
@@ -64,15 +66,39 @@ class ClaimRecognizer:
         top, bottom = TILE_AREA
         roi = frame[top:bottom]
         n, labels, stats, _ = cv2.connectedComponentsWithStats(white_mask(roi))
-        best = (None, TILE_ACCEPT, None)
+        # 1 筒的外圈貼到牌邊，會把牌面切成上下兩塊：左右邊界相同、上下相鄰的白色區塊合併成一張牌
+        groups = []  # [[x0, y0, x1, y1], [區塊編號...]]
         for i in range(1, n):
-            x, y, w, h, area = stats[i]
-            if not (80 <= w <= 150 and 110 <= h <= 210 and 1.2 <= h / w <= 1.7 and area > 0.5 * w * h):
+            x, y, w, h, _ = stats[i]
+            if not 80 <= w <= 150:
                 continue
-            patch = ink_patch(roi[y:y + h, x:x + w], (labels[y:y + h, x:x + w] == i).astype(np.uint8))
-            if patch is None:
+            for box, ids in groups:
+                if abs(x - box[0]) <= MERGE_DX and abs(x + w - box[2]) <= MERGE_DX and y - box[3] <= MERGE_DY:
+                    box[:] = [min(box[0], x), min(box[1], y), max(box[2], x + w), max(box[3], y + h)]
+                    ids.append(i)
+                    break
+            else:
+                groups.append(([x, y, x + w, y + h], [i]))
+
+        best = (None, TILE_ACCEPT, None)
+        for (x0, y0, x1, y1), ids in groups:
+            w, h = x1 - x0, y1 - y0
+            if not (80 <= w <= 150 and 110 <= h <= 210 and 1.2 <= h / w <= 1.7):
                 continue
-            label, score = self.matcher.match(patch)
-            if score > best[1]:
-                best = (label, score, (int(x), int(y + top), int(w), int(h)))
+            comp = np.isin(labels[y0:y1, x0:x1], ids).astype(np.uint8)
+            # 牌面是長方形：白色區塊的凸包要佔滿外框（圖案很大的牌白色面積會不到一半，不能直接看面積）
+            if cv2.contourArea(cv2.convexHull(cv2.findNonZero(comp))) < HULL_FILL * w * h:
+                continue
+            img = roi[y0:y1, x0:x1]
+            # 圖案超出牌面（發）或牌面被切開（1 筒）時，一般方法取不到圖案：
+            # 改把整張牌縮放成手牌樣板大小，用跟樣板一樣的方式切掉牌邊取圖案
+            for patch in (ink_patch(img, comp),
+                          hand_ink_patch(cv2.resize(img, (TILE_W, TILE_H), interpolation=cv2.INTER_AREA))):
+                if patch is None:
+                    continue
+                label, score = self.matcher.match(patch)
+                if score > best[1]:
+                    best = (label, score, (int(x0), int(y0 + top), int(w), int(h)))
+                if score >= TILE_ACCEPT:
+                    break
         return best[0], best[2]
