@@ -909,7 +909,7 @@ class ShantenCalculator:
         return shanten, count, tiles
 
     def suggest_claim(self, hand: List[str], tile: str, can_chi: bool = False,
-                      visible_tiles: List[str] = None) -> Dict[str, Any]:
+                      visible_tiles: List[str] = None, allowed: List[str] = None) -> Dict[str, Any]:
         """別人打出一張牌時，建議要不要胡、碰、槓、吃，吃哪一組，之後打哪張
 
         比較方式：
@@ -923,6 +923,7 @@ class ShantenCalculator:
             tile: 別人打出的牌
             can_chi: 是不是上家打的（只有上家打的牌能吃）
             visible_tiles: 場上已經看得到的牌（不含這張打出的牌）
+            allowed: 遊戲允許的動作（'pon'、'kan'、'chi'），例如亮著的按鈕；不給則依手牌判斷
 
         Returns:
             Dict[str, any]:
@@ -952,10 +953,13 @@ class ShantenCalculator:
             return rest
 
         # 碰、吃：亮出後手上多一張，要打一張
+        def ok(action):
+            return allowed is None or action in allowed
+
         claims = []
-        if hand.count(tile) >= 2:
+        if hand.count(tile) >= 2 and ok('pon'):
             claims.append(('pon', [tile] * 3, [tile, tile]))
-        if can_chi and tile[0].isdigit():
+        if can_chi and ok('chi') and tile[0].isdigit():
             num, suit = int(tile[0]), tile[1]
             for start in range(max(1, num - 2), min(num, 7) + 1):
                 meld = [f"{k}{suit}" for k in range(start, start + 3)]
@@ -973,7 +977,7 @@ class ShantenCalculator:
             })
 
         # 槓：亮出四張後補一張牌，手牌張數跟原本一樣是 3k+1
-        if hand.count(tile) >= 3:
+        if hand.count(tile) >= 3 and ok('kan'):
             rest = without([tile] * 3)
             s, c, t = self._hand_value(rest, self._remaining_counts(rest, visible + [tile] * 3))
             options.append({'action': 'kan', 'meld': [tile] * 4, 'discard': None,
@@ -1201,9 +1205,9 @@ def suggest_discard(hand_17: List[str], visible_tiles: List[str] = None) -> Dict
     return calculator.suggest_discard(hand_17, visible_tiles)
 
 def suggest_claim(hand: List[str], tile: str, can_chi: bool = False,
-                  visible_tiles: List[str] = None) -> Dict[str, Any]:
+                  visible_tiles: List[str] = None, allowed: List[str] = None) -> Dict[str, Any]:
     """別人打出一張牌時，建議要不要胡、碰、槓、吃的便捷函式（說明見 ShantenCalculator.suggest_claim）"""
-    return ShantenCalculator().suggest_claim(hand, tile, can_chi, visible_tiles)
+    return ShantenCalculator().suggest_claim(hand, tile, can_chi, visible_tiles, allowed)
 
 def suggest_self_kan(hand_17: List[str], pons: List[str] = None,
                      visible_tiles: List[str] = None) -> Dict[str, Any]:

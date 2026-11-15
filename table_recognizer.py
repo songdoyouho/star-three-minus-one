@@ -127,7 +127,8 @@ class TableRecognizer:
             return self.river_labels[i], float(river[i])
         hand = self.hand_feats @ f
         i = int(np.argmax(hand))
-        if hand[i] >= hand_accept:
+        # 手牌樣板分不清小張萬子的數字（5 萬會被認成 3 萬），萬子只認牌河樣板
+        if hand[i] >= hand_accept and not self.hand_labels[i].endswith('m'):
             return self.hand_labels[i], float(hand[i])
         return None, float(max(river.max(), hand[i]))
 

@@ -50,6 +50,8 @@ def test_kan():
     hand = MELDS_9 + ["north", "north", "north", "2p", "3p", "5m", "9m"]
     r = suggest_claim(hand, "north")
     check(r['action'] == 'kan', f"槓了進聽數不變差就槓，多補一張（{r['reason']}）")
+    r = suggest_claim(hand, "north", allowed=['pon'])
+    check(r['action'] != 'kan', f"遊戲只亮碰（不能槓）時不建議槓（{r['reason']}）")
 
 
 def test_concealed_kan():

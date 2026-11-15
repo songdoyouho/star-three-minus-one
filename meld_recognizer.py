@@ -3,6 +3,7 @@
 這些牌從最左邊開始一張接一張排（手牌往右移），每一格的位置和傾斜角度固定：
 牌面是上緣往右偏的四邊形，越左邊偏越多。把每一格拉正成長方形後，
 取牌面內非白色的部分當圖案，跟手牌樣板比對。
+每組吃碰槓都佔 3 格；槓是在中間那格上面再疊一張（暗槓時下面 3 張是蓋著的牌背）。
 位置參數用已知答案的截圖找出來（39 張全對，最低分 0.5）。座標以 2566x1386 的視窗截圖為準。
 """
 import cv2
@@ -19,7 +20,11 @@ TOP_OFFSET, TOP_OFFSET_STEP = 60, 8  # 上緣比下緣往右偏多少（第 i �
 FACE_W, FACE_H = 130, 98             # 拉正後的大小
 MARGIN_TOP, MARGIN_BOTTOM, MARGIN_SIDE = 3, 12, 6   # 萬子的數字很靠近上緣，上邊界不能太大
 ACCEPT = 0.45                         # 這裡一定是牌（在第一張手牌左邊），門檻可以低一點
-MAX_SLOTS = 16
+MAX_SLOTS = 15
+STACK_DX, STACK_DY = -3, 58          # 槓的第 4 張疊在中間那格上面：往左、往上偏移
+STACK_ACCEPT = 0.5                   # 疊在上面的牌要夠像才算槓（白板線條細，分數較低，約 0.58）
+CONCEALED_ACCEPT = 0.2               # 暗槓上面那張一定是牌，只要排得出最像的就好
+BACK_RATIO = 0.5                    # 藍綠色超過這個比例就是蓋著的牌背
 
 
 def slot_quad(i):
@@ -30,17 +35,10 @@ def slot_quad(i):
                        [left + BOTTOM_W, FACE_BOTTOM], [left, FACE_BOTTOM]])
 
 
-def group_melds(tiles):
-    """把一排吃碰槓的牌分成一組一組：4 張一樣是槓、3 張一樣是碰、其他 3 張是吃"""
-    melds, i = [], 0
-    while i < len(tiles):
-        if len(tiles) - i >= 4 and len(set(tiles[i:i + 4])) == 1:
-            melds.append(tiles[i:i + 4])
-            i += 4
-        else:
-            melds.append(tiles[i:i + 3])
-            i += 3
-    return melds
+def _is_back(face):
+    hsv = cv2.cvtColor(face, cv2.COLOR_BGR2HSV)
+    teal = (hsv[..., 0] > 85) & (hsv[..., 0] < 110) & (hsv[..., 1] > 120)
+    return teal.mean() > BACK_RATIO
 
 
 class MeldRecognizer:
@@ -48,7 +46,7 @@ class MeldRecognizer:
         self.matcher = HandTemplateMatcher(samples_dir)
         self._dst = np.float32([[0, 0], [FACE_W, 0], [FACE_W, FACE_H], [0, FACE_H]])
 
-    def _classify(self, face):
+    def _classify(self, face, accept=ACCEPT):
         ink = 1 - white_mask(face)
         ink[:MARGIN_TOP] = 0
         ink[FACE_H - MARGIN_BOTTOM:] = 0
@@ -61,7 +59,7 @@ class MeldRecognizer:
         patch = cv2.resize(face[ys.min():ys.max() + 1, xs.min():xs.max() + 1], (PATCH, PATCH),
                            interpolation=cv2.INTER_AREA)
         label, score = self.matcher.match(patch)
-        return (label if score >= ACCEPT else None), score
+        return (label if score >= accept else None), score
 
     def recognize(self, frame, hand_x):
         """辨識自己吃碰槓的牌
@@ -79,17 +77,36 @@ class MeldRecognizer:
             frame = cv2.resize(frame, (REF_W, REF_H))
         hand_x = hand_x / scale
 
-        tiles, detections = [], []
-        for i in range(MAX_SLOTS):
-            quad = slot_quad(i)
-            if quad[2][0] > hand_x:
+        melds, detections = [], []
+        for g in range(MAX_SLOTS // 3):
+            if slot_quad(3 * g + 2)[2][0] > hand_x:
                 break
-            face = cv2.warpPerspective(frame, cv2.getPerspectiveTransform(quad, self._dst), (FACE_W, FACE_H))
-            label, score = self._classify(face)
-            tiles.append(label or '?')
-            x0, x1 = quad[:, 0].min(), quad[:, 0].max()
-            detections.append({'x': int(x0 * scale), 'y': int(FACE_TOP * scale), 'w': int((x1 - x0) * scale),
-                               'h': int((FACE_BOTTOM - FACE_TOP) * scale), 'label': label or '?',
-                               'confidence': score})
-        area = (0, int((FACE_TOP - 20) * scale), int(hand_x * scale), int(180 * scale))
-        return {'tiles': tiles, 'melds': group_melds(tiles), 'detections': detections, 'area': area}
+            labels, backs = [], []
+            for i in range(3 * g, 3 * g + 3):
+                face = self._warp(frame, slot_quad(i))
+                backs.append(_is_back(face))
+                label, score = (None, 0.0) if backs[-1] else self._classify(face)
+                labels.append(label)
+                detections.append(self._detection(slot_quad(i), label, score, scale))
+            # 槓：中間那格上面疊了一張。暗槓（兩側是牌背）上面一定是牌，取最像的那張就好
+            stack = slot_quad(3 * g + 1) + np.float32([STACK_DX, -STACK_DY])
+            concealed = backs[0] and backs[2]
+            top, score = self._classify(self._warp(frame, stack), CONCEALED_ACCEPT if concealed else STACK_ACCEPT)
+            if top and all(l in (None, top) for l in labels):
+                melds.append([top] * 4)
+                detections.append(self._detection(stack, top, score, scale))
+            else:
+                melds.append([l or '?' for l in labels])
+        area = (0, int((FACE_TOP - STACK_DY - 20) * scale), int(hand_x * scale), int((180 + STACK_DY) * scale))
+        tiles = [t for m in melds for t in m]
+        return {'tiles': tiles, 'melds': melds, 'detections': detections, 'area': area}
+
+    def _warp(self, frame, quad):
+        return cv2.warpPerspective(frame, cv2.getPerspectiveTransform(quad, self._dst), (FACE_W, FACE_H))
+
+    @staticmethod
+    def _detection(quad, label, score, scale):
+        x0, x1 = quad[:, 0].min(), quad[:, 0].max()
+        y0, y1 = quad[:, 1].min(), quad[:, 1].max()
+        return {'x': int(x0 * scale), 'y': int(y0 * scale), 'w': int((x1 - x0) * scale),
+                'h': int((y1 - y0) * scale), 'label': label or '?', 'confidence': score}

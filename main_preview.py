@@ -12,7 +12,7 @@ from meld_recognizer import MeldRecognizer
 
 def _claim_advice(hand, tile, buttons, visible):
     """別人打出 tile、出現吃碰按鈕時的建議，回傳 (顯示文字, 建議按的按鈕)"""
-    s = suggest_claim(hand, tile, 'chi' in buttons, visible)
+    s = suggest_claim(hand, tile, 'chi' in buttons, visible, allowed=buttons)  # 只考慮亮著的按鈕
     best = s['best']
     print(f"別人打 {tile}，手牌 {' '.join(hand)} → {s['reason']}")
     if s['action'] == 'win':
