@@ -899,6 +899,153 @@ class ShantenCalculator:
         }
 
 
+    def _hand_value(self, hand: List[str], remaining: Dict[str, int]) -> Tuple[int, int, List[str]]:
+        """3k+1 張手牌的 (進聽數, 有效張數, 有效牌種)：聽牌時是等待的牌，否則是進張"""
+        shanten = self.calculate_shanten(hand)
+        if shanten == 0:
+            count, tiles = self._count_waiting_tiles(hand, remaining)
+        else:
+            count, tiles = self._count_improving_tiles(hand, shanten, remaining)
+        return shanten, count, tiles
+
+    def suggest_claim(self, hand: List[str], tile: str, can_chi: bool = False,
+                      visible_tiles: List[str] = None) -> Dict[str, Any]:
+        """別人打出一張牌時，建議要不要胡、碰、槓、吃，吃哪一組，之後打哪張
+
+        比較方式：
+        - 能胡就胡
+        - 碰、吃之後要打一張，打完的進聽數要比不吃碰還小才建議（一樣就不吃碰，保留門清和彈性）
+        - 槓完會補一張牌，進聽數不變差就建議
+        - 同進聽數時比有效張數（聽牌時是等待張數，否則是進張數）
+
+        Args:
+            hand: 手上的牌（16、13、10…張，不含吃碰槓的牌）
+            tile: 別人打出的牌
+            can_chi: 是不是上家打的（只有上家打的牌能吃）
+            visible_tiles: 場上已經看得到的牌（不含這張打出的牌）
+
+        Returns:
+            Dict[str, any]:
+                - 'action': 建議的動作 'win'、'pon'、'kan'、'chi' 或 'pass'
+                - 'best': 建議的選項
+                - 'options': 所有可行的選項，每個包含 'action'、'meld'（亮出的牌）、
+                  'discard'（之後要打的牌，槓和不吃碰沒有）、'shanten'、'count'、'tiles'
+                - 'reason': 建議原因
+        """
+        if len(hand) % 3 != 1 or len(hand) > 16:
+            raise ValueError(f"手牌張數必須是 16、13、10、7、4 或 1 張，目前有 {len(hand)} 張")
+
+        if self._can_form_complete_hand(hand + [tile]):
+            best = {'action': 'win', 'meld': [], 'discard': None, 'shanten': -1, 'count': 0, 'tiles': []}
+            return {'action': 'win', 'best': best, 'options': [best],
+                    'reason': f"{self._tile_to_chinese(tile)} 可以胡牌"}
+
+        visible = list(visible_tiles or []) + [tile]
+        shanten, count, tiles = self._hand_value(hand, self._remaining_counts(hand, visible))
+        options = [{'action': 'pass', 'meld': [], 'discard': None,
+                    'shanten': shanten, 'count': count, 'tiles': tiles}]
+
+        def without(tiles_to_remove):
+            rest = list(hand)
+            for t in tiles_to_remove:
+                rest.remove(t)
+            return rest
+
+        # 碰、吃：亮出後手上多一張，要打一張
+        claims = []
+        if hand.count(tile) >= 2:
+            claims.append(('pon', [tile] * 3, [tile, tile]))
+        if can_chi and tile[0].isdigit():
+            num, suit = int(tile[0]), tile[1]
+            for start in range(max(1, num - 2), min(num, 7) + 1):
+                meld = [f"{k}{suit}" for k in range(start, start + 3)]
+                used = [t for t in meld if t != tile]
+                if all(t in hand for t in used):
+                    claims.append(('chi', meld, used))
+        for action, meld, used in claims:
+            result = self.suggest_discard(without(used), visible + used)
+            best = result['best_options'][0]
+            after = result['shanten_after']
+            options.append({
+                'action': action, 'meld': meld, 'discard': result['tile'], 'shanten': after,
+                'count': best['wait_count'] if after == 0 else best['improving_count'],
+                'tiles': best['wait_tiles'] if after == 0 else best['improving_tiles'],
+            })
+
+        # 槓：亮出四張後補一張牌，手牌張數跟原本一樣是 3k+1
+        if hand.count(tile) >= 3:
+            rest = without([tile] * 3)
+            s, c, t = self._hand_value(rest, self._remaining_counts(rest, visible + [tile] * 3))
+            options.append({'action': 'kan', 'meld': [tile] * 4, 'discard': None,
+                             'shanten': s, 'count': c, 'tiles': t})
+
+        passing = options[0]
+        eligible = [o for o in options[1:]
+                    if o['shanten'] < passing['shanten']
+                    or (o['action'] == 'kan' and o['shanten'] <= passing['shanten'])]
+        best = min(eligible, key=lambda o: (o['shanten'], -o['count'])) if eligible else passing
+
+        names = {'pon': '碰', 'kan': '槓', 'chi': '吃'}
+        if best is passing:
+            if len(options) == 1:
+                reason = "不能吃碰槓"
+            else:
+                reason = f"吃碰後進聽數沒有變好（維持 {passing['shanten']}），不吃碰保留門清"
+        else:
+            meld_text = ''.join(self._tile_to_chinese(t) for t in best['meld'])
+            reason = f"{names[best['action']]} {meld_text}，進聽數 {passing['shanten']} → {best['shanten']}"
+            if best['discard']:
+                reason += f"，之後打 {self._tile_to_chinese(best['discard'])}"
+            if best['action'] == 'kan':
+                reason += "，還能多補一張牌"
+        return {'action': best['action'], 'best': best, 'options': options, 'reason': reason}
+
+    def suggest_self_kan(self, hand_17: List[str], pons: List[str] = None,
+                         visible_tiles: List[str] = None) -> Dict[str, Any]:
+        """輪到自己（剛摸牌）時，建議要不要暗槓或加槓
+
+        槓完會補一張牌，所以只要槓完的進聽數不比「直接打一張」差就建議槓。
+
+        Args:
+            hand_17: 手上的牌加上摸到的牌（17、14、11…張）
+            pons: 自己已經碰出去的牌（每組碰給一個牌名），用來判斷加槓
+            visible_tiles: 場上已經看得到的牌
+        Returns:
+            Dict[str, any]:
+                - 'action': 'kan'（建議槓）或 'none'
+                - 'best': 建議的選項（沒有可以槓的牌時是 None）
+                - 'options': 每個可以槓的選項，包含 'tile'、'type'（'concealed' 暗槓 / 'added' 加槓）、
+                  'shanten'、'count'、'tiles'
+                - 'reason': 建議原因
+        """
+        if len(hand_17) % 3 != 2 or len(hand_17) > 17:
+            raise ValueError(f"手牌張數必須是 17、14、11、8、5 或 2 張，目前有 {len(hand_17)} 張")
+        visible = list(visible_tiles or [])
+        candidates = [(t, 'concealed', 4) for t in dict.fromkeys(hand_17) if hand_17.count(t) == 4]
+        candidates += [(t, 'added', 1) for t in dict.fromkeys(pons or []) if t in hand_17]
+        if not candidates:
+            return {'action': 'none', 'best': None, 'options': [], 'reason': "沒有可以槓的牌"}
+
+        discard = self.suggest_discard(hand_17, visible)
+        options = []
+        for tile, kind, n in candidates:
+            rest = list(hand_17)
+            for _ in range(n):
+                rest.remove(tile)
+            s, c, t = self._hand_value(rest, self._remaining_counts(rest, visible + [tile] * 4))
+            options.append({'tile': tile, 'type': kind, 'shanten': s, 'count': c, 'tiles': t})
+        best = min(options, key=lambda o: (o['shanten'], -o['count']))
+
+        kind_name = {'concealed': '暗槓', 'added': '加槓'}[best['type']]
+        name = self._tile_to_chinese(best['tile'])
+        if best['shanten'] <= discard['shanten_after']:
+            reason = f"{kind_name} {name}，進聽數維持 {best['shanten']}，還能多補一張牌"
+            return {'action': 'kan', 'best': best, 'options': options, 'reason': reason}
+        reason = (f"{kind_name} {name} 會讓進聽數變成 {best['shanten']}"
+                  f"（直接打 {self._tile_to_chinese(discard['tile'])} 是 {discard['shanten_after']}），不建議槓")
+        return {'action': 'none', 'best': best, 'options': options, 'reason': reason}
+
+
 def _prune_options(options: Set[Tuple[int, int]]) -> Set[Tuple[int, int]]:
     """只保留不被支配的 (面子數, 搭子數) 組合"""
     return {
@@ -1052,6 +1199,35 @@ def suggest_discard(hand_17: List[str], visible_tiles: List[str] = None) -> Dict
     """
     calculator = ShantenCalculator()
     return calculator.suggest_discard(hand_17, visible_tiles)
+
+def suggest_claim(hand: List[str], tile: str, can_chi: bool = False,
+                  visible_tiles: List[str] = None) -> Dict[str, Any]:
+    """別人打出一張牌時，建議要不要胡、碰、槓、吃的便捷函式（說明見 ShantenCalculator.suggest_claim）"""
+    return ShantenCalculator().suggest_claim(hand, tile, can_chi, visible_tiles)
+
+def suggest_self_kan(hand_17: List[str], pons: List[str] = None,
+                     visible_tiles: List[str] = None) -> Dict[str, Any]:
+    """輪到自己時建議要不要暗槓、加槓的便捷函式（說明見 ShantenCalculator.suggest_self_kan）"""
+    return ShantenCalculator().suggest_self_kan(hand_17, pons, visible_tiles)
+
+def is_winning(hand: List[str]) -> bool:
+    """手牌（17、14、11…張）是否已經胡牌，例如自摸"""
+    return ShantenCalculator()._can_form_complete_hand(hand)
+
+def safest_discards(hand: List[str], visible_tiles: List[str]) -> List[Tuple[str, int]]:
+    """防守用：把手上的牌依「場上已經出現幾張」排序，越多張出現越不容易被胡
+
+    台灣麻將沒有振聽，別人打過的牌不是絕對安全，所以只看張數：
+    出現 3 張只剩單吊的可能，4 張就完全安全；同張數時字牌優先（不會被順子聽到）。
+
+    Returns:
+        [(牌, 場上已出現張數)]，每種牌一次，最安全的在前面
+    """
+    seen = defaultdict(int)
+    for t in visible_tiles:
+        seen[t] += 1
+    tiles = list(dict.fromkeys(hand))
+    return sorted(((t, seen[t]) for t in tiles), key=lambda x: (-x[1], x[0][0].isdigit()))
 
 def visualize_hand(hand: List[str], use_chinese: bool = True) -> str:
     """視覺化手牌的便捷函式

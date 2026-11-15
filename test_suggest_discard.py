@@ -3,7 +3,7 @@
 測試打牌建議功能
 """
 
-from calculate_shanten import suggest_discard, calculate_shanten
+from calculate_shanten import suggest_discard, calculate_shanten, safest_discards
 
 def test_suggest_discard_basic():
     """基本測試：測試打牌建議功能"""
@@ -219,6 +219,14 @@ def test_visible_tiles_reduce_count():
     assert best['wait_count'] == 4, f"應該剩 4 張 8m，實際 {best['wait_count']}"
     print("✓ 測試通過：剩餘張數正確扣除場上已出現的牌")
 
+def test_safest_discards():
+    """測試防守排序：場上出現越多張越安全，同張數字牌優先"""
+    print("\n=== 測試防守排序 ===")
+    hand = ["1m", "5p", "5p", "east", "9s"]
+    result = safest_discards(hand, ["9s", "9s", "9s", "5p", "east"])
+    assert result == [("9s", 3), ("east", 1), ("5p", 1), ("1m", 0)], f"排序錯誤: {result}"
+    print("✓ 測試通過：防守排序正確")
+
 def main():
     """執行所有測試"""
     print("=" * 60)
@@ -233,6 +241,7 @@ def main():
         test_improving_tiles_comparison()
         test_suggest_discard_after_melds()
         test_visible_tiles_reduce_count()
+        test_safest_discards()
         
         print("\n" + "=" * 60)
         print("測試完成")
